@@ -1,0 +1,619 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PeriodStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  SHOPPING
+  SHIPPING
+  COMPLETED
+  CANCELLED
+}
+enum CustomerStatus {
+  REGULAR
+  PRIORITY
+  PROBLEM
+  INACTIVE
+}
+enum FeeMode {
+  AUTO
+  MANUAL
+}
+
+enum OrderStatus {
+  NEW
+  WAITING_DP
+  DP_RECEIVED
+  WAITING_PURCHASE
+  SEARCHING
+  PURCHASED
+  UNAVAILABLE
+  WAITING_SETTLEMENT
+  PAID
+  READY_TO_SHIP
+  SHIPPED
+  COMPLETED
+  CANCELLED
+  REFUND
+}
+enum PurchaseStatus {
+  PENDING
+  FOUND
+  PURCHASED
+  OUT_OF_STOCK
+  PRICE_CHANGED
+  REPLACED
+}
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  PARTIAL_REFUND
+  FULL_REFUND
+}
+enum ShipmentStatus {
+  WAITING_PACKING
+  PACKED
+  READY
+  HANDED_TO_COURIER
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  RETURNED
+}
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+}
+enum NotificationType {
+  ORDER
+  PAYMENT
+  PURCHASE
+  SHIPMENT
+  PERIOD
+  CAPACITY
+  SYSTEM
+}
+
+enum ProductMode {
+  EVENT
+  READY_STOCK
+  BOTH
+}
+
+enum ItemSource {
+  CATALOG
+  MANUAL_RECAP
+  READY_STOCK
+}
+
+enum ItemFulfillmentStatus {
+  PENDING
+  SEARCHING
+  AVAILABLE
+  UNAVAILABLE
+  KEPT
+  READY_TO_SHIP
+  SHIPPED
+  DELIVERED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIAL
+  PAID
+  OVERPAID
+  REFUND_DUE
+  CANCELLED
+}
+
+enum RefundSource {
+  MANUAL
+  OVERPAYMENT
+  UNAVAILABLE_ITEM
+}
+
+model Role {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  canViewProfit Boolean  @default(false) @map("can_view_profit")
+  permissions   Json
+  users         User[]
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("roles")
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  passwordHash String        @map("password_hash")
+  isActive     Boolean       @default(true) @map("is_active")
+  roleId       Int           @map("role_id")
+  role         Role          @relation(fields: [roleId], references: [id])
+  orders       Order[]
+  purchases    Purchase[]
+  payments     Payment[]     @relation("VerifiedBy")
+  activityLogs ActivityLog[]
+  notifications Notification[]
+  inventoryMovements InventoryMovement[]
+  itemStatusHistories ItemStatusHistory[]
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  deletedAt    DateTime?     @map("deleted_at")
+  deletedById  Int?          @map("deleted_by_id")
+
+  @@index([roleId])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Customer {
+  id              Int            @id @default(autoincrement())
+  customerCode    String         @unique @map("customer_code")
+  fullName        String         @map("full_name")
+  whatsapp        String
+  email           String?
+  address         String?
+  city            String?
+  postalCode      String?        @map("postal_code")
+  socialUsername  String?        @map("social_username")
+  notes           String?
+  segment         CustomerStatus @default(REGULAR)
+  status          String         @default("active")
+  joinedAt        DateTime       @default(now()) @map("joined_at")
+  orders          Order[]
+  shipments       Shipment[]
+  invoices        Invoice[]
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  deletedAt       DateTime?      @map("deleted_at")
+  deletedById     Int?           @map("deleted_by_id")
+
+  @@index([fullName])
+  @@index([whatsapp])
+  @@index([deletedAt])
+  @@map("customers")
+}
+
+model JastipPeriod {
+  type                 PeriodType   @default(LOCAL)
+  id                   Int          @id @default(autoincrement())
+  code                 String       @unique
+  name                 String
+  country              String       @default("Indonesia")
+  city                 String?
+  orderOpenAt          DateTime     @map("order_open_at")
+  orderCloseAt         DateTime     @map("order_close_at")
+  departureAt          DateTime     @map("departure_at")
+  returnAt             DateTime     @map("return_at")
+  estimatedShippingAt  DateTime?    @map("estimated_shipping_at")
+  currencyCode         String       @default("IDR") @map("currency_code")
+  exchangeRate         Decimal      @default(1) @db.Decimal(18, 4) @map("exchange_rate")
+  status               PeriodStatus @default(DRAFT)
+  maxItems             Int?         @map("max_items")
+  baggageCapacityKg    Decimal?     @db.Decimal(10, 2) @map("baggage_capacity_kg")
+  notes                String?
+  orders               Order[]
+  expenses             Expense[]
+  purchases            Purchase[]
+  products             Product[]
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+  deletedAt            DateTime?    @map("deleted_at")
+  deletedById          Int?         @map("deleted_by_id")
+
+  @@index([status, departureAt])
+  @@index([deletedAt])
+  @@map("jastip_periods")
+}
+
+model Product {
+  id              Int         @id @default(autoincrement())
+  sku             String      @unique
+  name            String
+  category        String?
+  brandName       String?     @map("brand_name")
+  storeLocation   String?     @map("store_location")
+  productUrl      String?     @map("product_url")
+  imageUrl        String?     @map("image_url")
+  defaultCurrency String      @default("IDR") @map("default_currency")
+  stockMode       ProductMode @default(EVENT) @map("stock_mode")
+  stockQuantity   Int         @default(0) @map("stock_quantity")
+  reservedQuantity Int        @default(0) @map("reserved_quantity")
+  sellingPrice    Decimal     @default(0) @db.Decimal(18, 2) @map("selling_price")
+  lowStockThreshold Int       @default(0) @map("low_stock_threshold")
+  isActive        Boolean     @default(true) @map("is_active")
+  notes           String?
+  orderItems      OrderItem[]
+  purchases       Purchase[]
+  inventoryMovements InventoryMovement[]
+  periodId        Int?        @map("period_id")
+  period          JastipPeriod? @relation(fields: [periodId], references: [id])
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  deletedAt       DateTime?   @map("deleted_at")
+  deletedById     Int?        @map("deleted_by_id")
+
+  @@index([name])
+  @@index([brandName])
+  @@index([stockMode, isActive])
+  @@index([deletedAt])
+  @@map("products")
+}
+
+model Order {
+  id                    Int          @id @default(autoincrement())
+  orderNumber           String       @unique @map("order_number")
+  orderDate             DateTime     @default(now()) @map("order_date")
+  periodId              Int          @map("period_id")
+  period                JastipPeriod @relation(fields: [periodId], references: [id])
+  customerId            Int          @map("customer_id")
+  customer              Customer     @relation(fields: [customerId], references: [id])
+  adminId               Int?         @map("admin_id")
+  admin                 User?        @relation(fields: [adminId], references: [id])
+  status                OrderStatus  @default(NEW)
+  currencyCode          String       @default("IDR") @map("currency_code")
+  exchangeRate          Decimal      @default(1) @db.Decimal(18, 4) @map("exchange_rate")
+  productSubtotalForeign Decimal     @default(0) @db.Decimal(18, 2) @map("product_subtotal_foreign")
+  productSubtotalIdr    Decimal      @default(0) @db.Decimal(18, 2) @map("product_subtotal_idr")
+  serviceFee            Decimal      @default(0) @db.Decimal(18, 2) @map("service_fee")
+  serviceFeeMode        FeeMode      @default(AUTO) @map("service_fee_mode")
+  serviceFeeNote        String?      @map("service_fee_note")
+  localShipping         Decimal      @default(0) @db.Decimal(18, 2) @map("local_shipping")
+  internationalShipping Decimal      @default(0) @db.Decimal(18, 2) @map("international_shipping")
+  customerShipping      Decimal      @default(0) @db.Decimal(18, 2) @map("customer_shipping")
+  additionalFee         Decimal      @default(0) @db.Decimal(18, 2) @map("additional_fee")
+  discount              Decimal      @default(0) @db.Decimal(18, 2)
+  totalBill             Decimal      @default(0) @db.Decimal(18, 2) @map("total_bill")
+  paidAmount            Decimal      @default(0) @db.Decimal(18, 2) @map("paid_amount")
+  outstandingAmount     Decimal      @default(0) @db.Decimal(18, 2) @map("outstanding_amount")
+  customerNotes         String?      @map("customer_notes")
+  internalNotes         String?      @map("internal_notes")
+  dueDate               DateTime?    @map("due_date")
+  items                 OrderItem[]
+  payments              Payment[]
+  shipments             Shipment[]
+  refunds               Refund[]
+  invoiceLinks          InvoiceOrder[]
+  createdAt             DateTime     @default(now()) @map("created_at")
+  updatedAt             DateTime     @updatedAt @map("updated_at")
+  deletedAt             DateTime?    @map("deleted_at")
+  deletedById           Int?         @map("deleted_by_id")
+
+  @@index([orderDate])
+  @@index([periodId, status])
+  @@index([customerId])
+  @@index([adminId])
+  @@index([dueDate])
+  @@index([deletedAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                  Int            @id @default(autoincrement())
+  orderId             Int            @map("order_id")
+  order               Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId           Int?           @map("product_id")
+  product             Product?       @relation(fields: [productId], references: [id])
+  manualProductName   String?        @map("manual_product_name")
+  brandName           String?        @map("brand_name")
+  sourceType          ItemSource     @default(CATALOG) @map("source_type")
+  fulfillmentStatus   ItemFulfillmentStatus @default(PENDING) @map("fulfillment_status")
+  keptUntil           DateTime?      @map("kept_until")
+  statusUpdatedAt     DateTime       @default(now()) @map("status_updated_at")
+  variation           String?
+  size                String?
+  color               String?
+  quantity            Int            @default(1)
+  unitPriceForeign    Decimal        @db.Decimal(18, 2) @map("unit_price_foreign")
+  targetPriceIdr      Decimal        @db.Decimal(18, 2) @map("target_price_idr")
+  purchaseStatus      PurchaseStatus @default(PENDING) @map("purchase_status")
+  purchaseNotes       String?        @map("purchase_notes")
+  photoUrl            String?        @map("photo_url")
+  purchases           Purchase[]
+  statusHistories     ItemStatusHistory[]
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([purchaseStatus])
+  @@index([fulfillmentStatus, keptUntil])
+  @@map("order_items")
+}
+
+model ItemStatusHistory {
+  id          Int      @id @default(autoincrement())
+  orderItemId Int      @map("order_item_id")
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  fromStatus  ItemFulfillmentStatus? @map("from_status")
+  toStatus    ItemFulfillmentStatus  @map("to_status")
+  notes       String?
+  userId      Int?     @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([orderItemId, createdAt])
+  @@index([toStatus, createdAt])
+  @@map("item_status_histories")
+}
+
+model Purchase {
+  id                  Int            @id @default(autoincrement())
+  purchaseNumber      String         @unique @map("purchase_number")
+  purchaseDate        DateTime       @default(now()) @map("purchase_date")
+  shopperId           Int?           @map("shopper_id")
+  shopper             User?          @relation(fields: [shopperId], references: [id])
+  periodId            Int            @map("period_id")
+  period              JastipPeriod   @relation(fields: [periodId], references: [id])
+  orderItemId         Int            @map("order_item_id")
+  orderItem           OrderItem      @relation(fields: [orderItemId], references: [id])
+  productId           Int?           @map("product_id")
+  product             Product?       @relation(fields: [productId], references: [id])
+  brandName           String         @map("brand_name")
+  quantity            Int
+  estimatedPrice      Decimal        @db.Decimal(18, 2) @map("estimated_price")
+  actualPrice         Decimal        @db.Decimal(18, 2) @map("actual_price")
+  priceDifference     Decimal        @db.Decimal(18, 2) @map("price_difference")
+  currencyCode        String         @default("IDR") @map("currency_code")
+  exchangeRate        Decimal        @default(1) @db.Decimal(18, 4) @map("exchange_rate")
+  paymentMethod       String?        @map("payment_method")
+  receiptUrl          String?        @map("receipt_url")
+  notes               String?
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  @@index([periodId])
+  @@index([orderItemId])
+  @@index([shopperId])
+  @@map("purchases")
+}
+
+model Payment {
+  id                 Int           @id @default(autoincrement())
+  paymentNumber      String        @unique @map("payment_number")
+  orderId            Int?          @map("order_id")
+  order              Order?        @relation(fields: [orderId], references: [id])
+  invoiceId          Int?          @map("invoice_id")
+  invoice            Invoice?      @relation(fields: [invoiceId], references: [id])
+  paymentDate        DateTime      @default(now()) @map("payment_date")
+  amount             Decimal       @db.Decimal(18, 2)
+  method             String
+  destinationAccount String?       @map("destination_account")
+  proofUrl           String?       @map("proof_url")
+  status             PaymentStatus @default(PENDING)
+  verifiedById       Int?          @map("verified_by_id")
+  verifiedBy         User?         @relation("VerifiedBy", fields: [verifiedById], references: [id])
+  notes              String?
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+  deletedById        Int?          @map("deleted_by_id")
+
+  @@index([orderId, status])
+  @@index([invoiceId, status])
+  @@index([paymentDate])
+  @@index([deletedAt])
+  @@map("payments")
+}
+
+model Expense {
+  id              Int          @id @default(autoincrement())
+  expenseNumber   String       @unique @map("expense_number")
+  expenseDate     DateTime     @default(now()) @map("expense_date")
+  category        String
+  periodId        Int?         @map("period_id")
+  period          JastipPeriod? @relation(fields: [periodId], references: [id])
+  amount          Decimal      @db.Decimal(18, 2)
+  currencyCode    String       @default("IDR") @map("currency_code")
+  exchangeRate    Decimal      @default(1) @db.Decimal(18, 4) @map("exchange_rate")
+  amountIdr       Decimal      @db.Decimal(18, 2) @map("amount_idr")
+  payee           String?
+  paymentMethod   String?      @map("payment_method")
+  proofUrl        String?      @map("proof_url")
+  notes           String?
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  deletedAt       DateTime?    @map("deleted_at")
+  deletedById     Int?         @map("deleted_by_id")
+
+  @@index([periodId, expenseDate])
+  @@index([deletedAt])
+  @@map("expenses")
+}
+
+model Shipment {
+  id              Int            @id @default(autoincrement())
+  trackingNumber  String?        @unique @map("tracking_number")
+  orderId         Int            @map("order_id")
+  order           Order          @relation(fields: [orderId], references: [id])
+  customerId      Int            @map("customer_id")
+  customer        Customer       @relation(fields: [customerId], references: [id])
+  address         String
+  courier         String
+  serviceType     String?        @map("service_type")
+  weightKg        Decimal?       @db.Decimal(10, 2) @map("weight_kg")
+  shippingCost    Decimal        @default(0) @db.Decimal(18, 2) @map("shipping_cost")
+  shippedAt       DateTime?      @map("shipped_at")
+  status          ShipmentStatus @default(WAITING_PACKING)
+  proofUrl        String?        @map("proof_url")
+  notes           String?
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@index([customerId])
+  @@index([status])
+  @@map("shipments")
+}
+
+model Refund {
+  id             Int          @id @default(autoincrement())
+  refundNumber   String       @unique @map("refund_number")
+  orderId        Int?         @map("order_id")
+  order          Order?       @relation(fields: [orderId], references: [id])
+  invoiceId      Int?         @map("invoice_id")
+  invoice        Invoice?     @relation(fields: [invoiceId], references: [id])
+  amount         Decimal      @db.Decimal(18, 2)
+  reason         String
+  status         RefundStatus @default(REQUESTED)
+  source         RefundSource @default(MANUAL)
+  sourceKey      String?      @unique @map("source_key")
+  autoGenerated  Boolean      @default(false) @map("auto_generated")
+  refundedAt     DateTime?    @map("refunded_at")
+  notes          String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
+  deletedById    Int?         @map("deleted_by_id")
+
+  @@index([orderId, status])
+  @@index([invoiceId, status])
+  @@index([deletedAt])
+  @@map("refunds")
+}
+
+model Invoice {
+  id                Int           @id @default(autoincrement())
+  invoiceNumber     String        @unique @map("invoice_number")
+  customerId        Int           @map("customer_id")
+  customer          Customer      @relation(fields: [customerId], references: [id])
+  invoiceDate       DateTime      @default(now()) @map("invoice_date")
+  dueDate           DateTime?     @map("due_date")
+  status            InvoiceStatus @default(ISSUED)
+  totalBill         Decimal       @default(0) @db.Decimal(18, 2) @map("total_bill")
+  paidAmount        Decimal       @default(0) @db.Decimal(18, 2) @map("paid_amount")
+  outstandingAmount Decimal       @default(0) @db.Decimal(18, 2) @map("outstanding_amount")
+  overpaymentAmount Decimal       @default(0) @db.Decimal(18, 2) @map("overpayment_amount")
+  notes             String?
+  billingModel      String?       @default("FLEXIBLE") @map("billing_model")
+  whatsappMessage   String?       @map("whatsapp_message")
+  orders            InvoiceOrder[]
+  payments          Payment[]
+  refunds           Refund[]
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  deletedAt         DateTime?     @map("deleted_at")
+  deletedById       Int?          @map("deleted_by_id")
+
+  @@index([customerId, invoiceDate])
+  @@index([status, dueDate])
+  @@index([deletedAt])
+  @@map("invoices")
+}
+
+model InvoiceOrder {
+  id             Int      @id @default(autoincrement())
+  invoiceId      Int      @map("invoice_id")
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  orderId        Int      @unique @map("order_id")
+  order          Order    @relation(fields: [orderId], references: [id])
+  snapshotAmount Decimal  @db.Decimal(18, 2) @map("snapshot_amount")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([invoiceId])
+  @@map("invoice_orders")
+}
+
+model InventoryMovement {
+  id            Int      @id @default(autoincrement())
+  productId     Int      @map("product_id")
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  movementType  String   @map("movement_type")
+  quantity      Int
+  balanceAfter  Int      @map("balance_after")
+  referenceType String?  @map("reference_type")
+  referenceId   String?  @map("reference_id")
+  notes         String?
+  userId        Int?     @map("user_id")
+  user          User?    @relation(fields: [userId], references: [id])
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([productId, createdAt])
+  @@index([referenceType, referenceId])
+  @@map("inventory_movements")
+}
+
+model Currency {
+  code        String         @id
+  name        String
+  symbol      String
+  isActive    Boolean        @default(true) @map("is_active")
+  rates       ExchangeRate[]
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  @@map("currencies")
+}
+
+model ExchangeRate {
+  id           Int      @id @default(autoincrement())
+  currencyCode String   @map("currency_code")
+  currency     Currency @relation(fields: [currencyCode], references: [code])
+  rateToIdr    Decimal  @db.Decimal(18, 4) @map("rate_to_idr")
+  effectiveAt  DateTime @map("effective_at")
+  source       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([currencyCode, effectiveAt])
+  @@map("exchange_rates")
+}
+
+model Notification {
+  id         Int              @id @default(autoincrement())
+  userId     Int?             @map("user_id")
+  user       User?            @relation(fields: [userId], references: [id])
+  type       NotificationType
+  title      String
+  message    String
+  link       String?
+  dedupeKey  String?          @unique @map("dedupe_key")
+  isRead     Boolean          @default(false) @map("is_read")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model ActivityLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entity     String
+  entityId   String?  @map("entity_id")
+  metadata   Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+  @@map("activity_logs")
+}
+
+model Setting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+
+enum PeriodType {
+  LOCAL
+  INTERNATIONAL
+}

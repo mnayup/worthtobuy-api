@@ -1,0 +1,110 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../config/prisma/prisma.service';
+import { InvoiceCalcService } from '../shared/invoice-calc.service';
+
+type EntityType = 'USER' | 'CUSTOMER' | 'PERIOD' | 'PRODUCT' | 'ORDER' | 'PAYMENT' | 'EXPENSE' | 'REFUND' | 'INVOICE';
+
+@Injectable()
+export class TrashService {
+  constructor(
+    private prisma: PrismaService,
+    private invoiceCalcService: InvoiceCalcService,
+  ) { }
+
+  private getDelegate(entity: EntityType): any {
+    const delegates: Record<EntityType, any> = {
+      USER: this.prisma.user,
+      CUSTOMER: this.prisma.customer,
+      PERIOD: this.prisma.jastip_period,
+      PRODUCT: this.prisma.product,
+      ORDER: this.prisma.order,
+      PAYMENT: this.prisma.payment,
+      EXPENSE: this.prisma.expense,
+      REFUND: this.prisma.refund,
+      INVOICE: this.prisma.invoice,
+    };
+    return delegates[entity];
+  }
+
+  async findAll(query: any) {
+    const page = Math.max(1, Number(query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(query.limit || 10)));
+    const skip = (page - 1) * limit;
+    const search = String(query.search || '').trim().toLowerCase().slice(0, 100);
+    const requestedType = String(query.type || '').trim().toUpperCase();
+
+    const [users, customers, periods, products, orders, payments, expenses, refunds, invoices] = await Promise.all([
+      this.prisma.user.findMany({ where: { deleted_at: { not: null } }, include: { role: true } }),
+      this.prisma.customer.findMany({ where: { deleted_at: { not: null } } }),
+      this.prisma.jastip_period.findMany({ where: { deleted_at: { not: null } } }),
+      this.prisma.product.findMany({ where: { deleted_at: { not: null } } }),
+      this.prisma.order.findMany({ where: { deleted_at: { not: null } }, include: { customer: true, period: true } }),
+      this.prisma.payment.findMany({ where: { deleted_at: { not: null } }, include: { invoice: true, order: true } }),
+      this.prisma.expense.findMany({ where: { deleted_at: { not: null } }, include: { period: true } }),
+      this.prisma.refund.findMany({ where: { deleted_at: { not: null } }, include: { invoice: true, order: true } }),
+      this.prisma.invoice.findMany({ where: { deleted_at: { not: null } }, include: { customer: true } }),
+    ]);
+
+    const all = [
+      ...users.map((x: any) => ({ entityType: 'USER', id: x.id, code: x.email, name: `${x.name} • ${x.role?.name || '-'}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...customers.map((x: any) => ({ entityType: 'CUSTOMER', id: x.id, code: x.customer_code, name: x.full_name, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...periods.map((x: any) => ({ entityType: 'PERIOD', id: x.id, code: x.code, name: x.name, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...products.map((x: any) => ({ entityType: 'PRODUCT', id: x.id, code: x.sku, name: x.name, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...orders.map((x: any) => ({ entityType: 'ORDER', id: x.id, code: x.order_number, name: `${x.customer?.full_name || '-'} • ${x.period?.code || '-'}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...payments.map((x: any) => ({ entityType: 'PAYMENT', id: x.id, code: x.payment_number, name: `${x.invoice?.invoice_number || x.order?.order_number || '-'} • Rp${Number(x.amount).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...expenses.map((x: any) => ({ entityType: 'EXPENSE', id: x.id, code: x.expense_number, name: `${x.category} • Rp${Number(x.amount_idr).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...refunds.map((x: any) => ({ entityType: 'REFUND', id: x.id, code: x.refund_number, name: `${x.invoice?.invoice_number || x.order?.order_number || '-'} • Rp${Number(x.amount).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...invoices.map((x: any) => ({ entityType: 'INVOICE', id: x.id, code: x.invoice_number, name: `${x.customer?.full_name || '-'} • Rp${Number(x.total_bill).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+    ].sort((a, b) => new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime());
+
+    const userIds = [...new Set(all.map(x => x.deleted_by_id).filter(Boolean))];
+    const deleters = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true } }) : [];
+    const names = new Map(deleters.map((x: any) => [x.id, x.name]));
+    const enriched = all.map(x => ({ ...x, deletedByName: names.get(x.deleted_by_id) || '-' }));
+
+    const filtered = enriched.filter((row: any) => {
+      if (requestedType && row.entityType !== requestedType) return false;
+      if (!search) return true;
+      return `${row.entityType} ${row.code || ''} ${row.name || ''} ${row.deletedByName || ''}`.toLowerCase().includes(search);
+    });
+
+    const counts = {
+      all: enriched.length,
+      invoice: enriched.filter((row: any) => row.entityType === 'INVOICE').length,
+      transaction: enriched.filter((row: any) => !['INVOICE', 'USER', 'CUSTOMER', 'PERIOD', 'PRODUCT'].includes(row.entityType)).length,
+    };
+
+    return { data: filtered.slice(skip, skip + limit), total: filtered.length, page, limit, counts };
+  }
+
+  async restore(entity: EntityType, id: number) {
+    const delegate = this.getDelegate(entity);
+    const data = await delegate.update({
+      where: { id },
+      data: { deleted_at: null, deleted_by_id: null, ...(entity === 'USER' ? { is_active: true } : {}) },
+    });
+
+    if (entity === 'PAYMENT') {
+      const activeInvoice = data.invoice_id ? await this.prisma.invoice.findFirst({ where: { id: data.invoice_id, deleted_at: null } }) : null;
+      const activeOrder = data.order_id ? await this.prisma.order.findFirst({ where: { id: data.order_id, deleted_at: null } }) : null;
+      if (activeInvoice || activeOrder) await this.invoiceCalcService.refreshPaymentTarget(data);
+    }
+    if (entity === 'REFUND' && data.invoice_id) {
+      const activeInvoice = await this.prisma.invoice.findFirst({ where: { id: data.invoice_id, deleted_at: null } });
+      if (activeInvoice) await this.invoiceCalcService.refreshInvoicePayment(data.invoice_id);
+    }
+    if (entity === 'INVOICE') {
+      await this.invoiceCalcService.refreshInvoicePayment(id);
+    }
+    return data;
+  }
+
+  async hardDelete(entity: EntityType, id: number) {
+    const delegate = this.getDelegate(entity);
+    const trashed = await delegate.findFirst({ where: { id, deleted_at: { not: null } } });
+    if (!trashed) throw new NotFoundException('Data tidak ditemukan di Trash.');
+
+    await delegate.delete({ where: { id } });
+    return { success: true };
+  }
+}

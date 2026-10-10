@@ -1,0 +1,638 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PeriodStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  SHOPPING
+  SHIPPING
+  COMPLETED
+  CANCELLED
+}
+
+enum CustomerStatus {
+  REGULAR
+  PRIORITY
+  PROBLEM
+  INACTIVE
+}
+
+enum FeeMode {
+  AUTO
+  AUTO_CUSTOMER
+  AUTO_RESELLER
+  MANUAL
+}
+
+enum OrderStatus {
+  NEW
+  WAITING_DP
+  DP_RECEIVED
+  WAITING_PURCHASE
+  SEARCHING
+  PURCHASED
+  UNAVAILABLE
+  WAITING_SETTLEMENT
+  PAID
+  READY_TO_SHIP
+  SHIPPED
+  COMPLETED
+  CANCELLED
+  REFUND
+}
+
+enum PurchaseStatus {
+  WAITING_PURCHASE
+  PURCHASED
+  UNAVAILABLE
+  PENDING
+  FOUND
+  OUT_OF_STOCK
+  PRICE_CHANGED
+  REPLACED
+}
+
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  PARTIAL_REFUND
+  FULL_REFUND
+}
+
+enum ShipmentStatus {
+  WAITING_PACKING
+  PACKED
+  READY
+  HANDED_TO_COURIER
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  RETURNED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum RefundType {
+  DIRECT_TRANSFER
+  CUSTOMER_DEPOSIT
+}
+
+enum NotificationType {
+  ORDER
+  PAYMENT
+  PURCHASE
+  SHIPMENT
+  PERIOD
+  CAPACITY
+  SYSTEM
+}
+
+enum ProductMode {
+  EVENT
+  READY_STOCK
+  BOTH
+}
+
+enum ItemSource {
+  CATALOG
+  MANUAL_RECAP
+  READY_STOCK
+}
+
+enum ItemFulfillmentStatus {
+  PENDING
+  SEARCHING
+  AVAILABLE
+  UNAVAILABLE
+  KEPT
+  READY_TO_SHIP
+  SHIPPED
+  DELIVERED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIAL
+  PAID
+  OVERPAID
+  REFUND_DUE
+  CANCELLED
+}
+
+enum RefundSource {
+  MANUAL
+  OVERPAYMENT
+  UNAVAILABLE_ITEM
+}
+
+enum PeriodType {
+  LOCAL
+  INTERNATIONAL
+}
+
+model role {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  description     String?
+  can_view_profit Boolean  @default(false)
+  permissions     Json
+  users           user[]
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@map("roles")
+}
+
+model user {
+  id                    Int                     @id @default(autoincrement())
+  name                  String
+  username              String?                 @unique
+  email                 String?                 @unique
+  password_hash         String
+  phone                 String?
+  avatar_url            String?
+  is_active             Boolean                 @default(true)
+  mfa_enabled           Boolean                 @default(false)
+  mfa_secret            String?
+  mfa_recovery_codes    String[]                @default([])
+  role_id               Int
+  role                  role                    @relation(fields: [role_id], references: [id])
+  orders                order[]
+  purchases             purchase[]
+  payments              payment[]               @relation("VerifiedBy")
+  notifications         notification[]
+  inventory_movements   inventory_movement[]
+  item_status_histories item_status_history[]
+  created_at            DateTime                @default(now())
+  updated_at            DateTime                @updatedAt
+  deleted_at            DateTime?
+  deleted_by_id         Int?
+
+  @@index([role_id])
+  @@index([deleted_at])
+  @@map("users")
+}
+
+model customer {
+  id              Int            @id @default(autoincrement())
+  customer_code   String         @unique
+  full_name       String
+  whatsapp        String
+  email           String?
+  address         String?
+  city            String?
+  postal_code     String?
+  social_username String?
+  notes           String?
+  segment         CustomerStatus @default(REGULAR)
+  status          String         @default("active")
+  joined_at       DateTime       @default(now())
+  orders          order[]
+  shipments       shipment[]
+  invoices        invoice[]
+  refunds         refund[]
+  deposit_balance Decimal        @default(0) @db.Decimal(18, 2)
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+  deleted_at      DateTime?
+  deleted_by_id   Int?
+
+  @@index([full_name])
+  @@index([whatsapp])
+  @@index([deleted_at])
+  @@map("customers")
+}
+
+model jastip_period {
+  type                  PeriodType   @default(LOCAL)
+  id                    Int          @id @default(autoincrement())
+  code                  String       @unique
+  name                  String
+  country               String       @default("Indonesia")
+  city                  String?
+  order_open_at         DateTime
+  order_close_at        DateTime
+  departure_at          DateTime
+  return_at             DateTime
+  estimated_shipping_at DateTime?
+  currency_code         String       @default("IDR")
+  exchange_rate         Decimal      @default(1) @db.Decimal(18, 4)
+  status                PeriodStatus @default(DRAFT)
+  max_items             Int?
+  baggage_capacity_kg   Decimal?     @db.Decimal(10, 2)
+  notes                 String?
+  orders                order[]
+  expenses              expense[]
+  purchases             purchase[]
+  products              product[]
+  created_at            DateTime     @default(now())
+  updated_at            DateTime     @updatedAt
+  deleted_at            DateTime?
+  deleted_by_id         Int?
+
+  @@index([status, departure_at])
+  @@index([deleted_at])
+  @@map("jastip_periods")
+}
+
+model product {
+  id                  Int                  @id @default(autoincrement())
+  sku                 String               @unique
+  name                String
+  category            String?
+  brand_name          String?
+  store_location      String?
+  product_url         String?
+  image_url           String?
+  default_currency    String               @default("IDR")
+  stock_mode          ProductMode          @default(EVENT)
+  stock_quantity      Int                  @default(0)
+  reserved_quantity   Int                  @default(0)
+  buy_price           Decimal              @default(0) @db.Decimal(18, 2)
+  selling_price       Decimal              @default(0) @db.Decimal(18, 2)
+  low_stock_threshold Int                  @default(0)
+  is_active           Boolean              @default(true)
+  notes               String?
+  order_items         order_item[]
+  purchases           purchase[]
+  inventory_movements inventory_movement[]
+  period_id           Int?
+  period              jastip_period?       @relation(fields: [period_id], references: [id])
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+  deleted_at          DateTime?
+  deleted_by_id       Int?
+
+  @@index([name])
+  @@index([brand_name])
+  @@index([stock_mode, is_active])
+  @@index([deleted_at])
+  @@map("products")
+}
+
+model order {
+  id                       Int             @id @default(autoincrement())
+  order_number             String          @unique
+  order_date               DateTime        @default(now())
+  period_id                Int
+  period                   jastip_period   @relation(fields: [period_id], references: [id])
+  customer_id              Int
+  customer                 customer        @relation(fields: [customer_id], references: [id])
+  admin_id                 Int?
+  admin                    user?           @relation(fields: [admin_id], references: [id])
+  status                   OrderStatus     @default(NEW)
+  currency_code            String          @default("IDR")
+  exchange_rate            Decimal         @default(1) @db.Decimal(18, 4)
+  product_subtotal_foreign Decimal         @default(0) @db.Decimal(18, 2)
+  product_subtotal_idr     Decimal         @default(0) @db.Decimal(18, 2)
+  service_fee              Decimal         @default(0) @db.Decimal(18, 2)
+  service_fee_mode         FeeMode         @default(AUTO)
+  service_fee_note         String?
+  local_shipping           Decimal         @default(0) @db.Decimal(18, 2)
+  international_shipping   Decimal         @default(0) @db.Decimal(18, 2)
+  customer_shipping        Decimal         @default(0) @db.Decimal(18, 2)
+  additional_fee           Decimal         @default(0) @db.Decimal(18, 2)
+  discount                 Decimal         @default(0) @db.Decimal(18, 2)
+  total_bill               Decimal         @default(0) @db.Decimal(18, 2)
+  paid_amount              Decimal         @default(0) @db.Decimal(18, 2)
+  outstanding_amount       Decimal         @default(0) @db.Decimal(18, 2)
+  customer_notes           String?
+  internal_notes           String?
+  due_date                 DateTime?
+  items                    order_item[]
+  payments                 payment[]
+  shipments                shipment[]
+  refunds                  refund[]
+  invoice_links            invoice_order[]
+  created_at               DateTime        @default(now())
+  updated_at               DateTime        @updatedAt
+  deleted_at               DateTime?
+  deleted_by_id            Int?
+
+  @@index([order_date])
+  @@index([period_id, status])
+  @@index([customer_id])
+  @@index([admin_id])
+  @@index([due_date])
+  @@index([deleted_at])
+  @@map("orders")
+}
+
+model order_item {
+  id                  Int                   @id @default(autoincrement())
+  order_id            Int
+  order               order                 @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product_id          Int?
+  product             product?              @relation(fields: [product_id], references: [id])
+  manual_product_name String?
+  brand_name          String?
+  source_type         ItemSource            @default(CATALOG)
+  fulfillment_status  ItemFulfillmentStatus @default(PENDING)
+  kept_until          DateTime?
+  status_updated_at   DateTime              @default(now())
+  variation           String?
+  size                String?
+  color               String?
+  quantity            Int                   @default(1)
+  unit_price_foreign  Decimal               @db.Decimal(18, 2)
+  target_price_idr    Decimal               @db.Decimal(18, 2)
+  purchase_status     PurchaseStatus        @default(PENDING)
+  purchase_notes      String?
+  photo_url           String?
+  purchases           purchase[]
+  status_histories    item_status_history[]
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @updatedAt
+
+  @@index([order_id])
+  @@index([product_id])
+  @@index([purchase_status])
+  @@index([fulfillment_status, kept_until])
+  @@map("order_items")
+}
+
+model item_status_history {
+  id            Int                    @id @default(autoincrement())
+  order_item_id Int
+  order_item    order_item             @relation(fields: [order_item_id], references: [id], onDelete: Cascade)
+  from_status   ItemFulfillmentStatus?
+  to_status     ItemFulfillmentStatus
+  notes         String?
+  user_id       Int?
+  user          user?                  @relation(fields: [user_id], references: [id])
+  created_at    DateTime               @default(now())
+
+  @@index([order_item_id, created_at])
+  @@index([to_status, created_at])
+  @@map("item_status_histories")
+}
+
+model purchase {
+  id               Int            @id @default(autoincrement())
+  purchase_number  String         @unique
+  purchase_date    DateTime       @default(now())
+  shopper_id       Int?
+  shopper          user?          @relation(fields: [shopper_id], references: [id])
+  period_id        Int
+  period           jastip_period  @relation(fields: [period_id], references: [id])
+  order_item_id    Int
+  order_item       order_item     @relation(fields: [order_item_id], references: [id])
+  product_id       Int?
+  product          product?       @relation(fields: [product_id], references: [id])
+  brand_name       String
+  quantity         Int
+  estimated_price  Decimal        @db.Decimal(18, 2)
+  actual_price     Decimal        @db.Decimal(18, 2)
+  price_difference Decimal        @db.Decimal(18, 2)
+  status           PurchaseStatus @default(WAITING_PURCHASE)
+  currency_code    String         @default("IDR")
+  exchange_rate    Decimal        @default(1) @db.Decimal(18, 4)
+  payment_method   String?
+  receipt_url      String?
+  notes            String?
+  created_at       DateTime       @default(now())
+  updated_at       DateTime       @updatedAt
+
+  @@index([period_id])
+  @@index([order_item_id])
+  @@index([shopper_id])
+  @@index([status])
+  @@map("purchases")
+}
+
+model payment {
+  id                  Int           @id @default(autoincrement())
+  payment_number      String        @unique
+  order_id            Int?
+  order               order?        @relation(fields: [order_id], references: [id])
+  invoice_id          Int?
+  invoice             invoice?      @relation(fields: [invoice_id], references: [id])
+  payment_date        DateTime      @default(now())
+  amount              Decimal       @db.Decimal(18, 2)
+  method              String
+  destination_account String?
+  proof_url           String?
+  status              PaymentStatus @default(PENDING)
+  verified_by_id      Int?
+  verified_by         user?         @relation("VerifiedBy", fields: [verified_by_id], references: [id])
+  notes               String?
+  created_at          DateTime      @default(now())
+  updated_at          DateTime      @updatedAt
+  deleted_at          DateTime?
+  deleted_by_id       Int?
+
+  @@index([order_id, status])
+  @@index([invoice_id, status])
+  @@index([payment_date])
+  @@index([deleted_at])
+  @@map("payments")
+}
+
+model expense {
+  id             Int            @id @default(autoincrement())
+  expense_number String         @unique
+  expense_date   DateTime       @default(now())
+  category       String
+  period_id      Int?
+  period         jastip_period? @relation(fields: [period_id], references: [id])
+  amount         Decimal        @db.Decimal(18, 2)
+  currency_code  String         @default("IDR")
+  exchange_rate  Decimal        @default(1) @db.Decimal(18, 4)
+  amount_idr     Decimal        @db.Decimal(18, 2)
+  payee          String?
+  payment_method String?
+  proof_url      String?
+  notes          String?
+  created_at     DateTime       @default(now())
+  updated_at     DateTime       @updatedAt
+  deleted_at     DateTime?
+  deleted_by_id  Int?
+
+  @@index([period_id, expense_date])
+  @@index([deleted_at])
+  @@map("expenses")
+}
+
+model shipment {
+  id              Int            @id @default(autoincrement())
+  tracking_number String?        @unique
+  order_id        Int
+  order           order          @relation(fields: [order_id], references: [id])
+  customer_id     Int
+  customer        customer       @relation(fields: [customer_id], references: [id])
+  address         String
+  courier         String
+  service_type    String?
+  weight_kg       Decimal?       @db.Decimal(10, 2)
+  shipping_cost   Decimal        @default(0) @db.Decimal(18, 2)
+  shipped_at      DateTime?
+  status          ShipmentStatus @default(WAITING_PACKING)
+  proof_url       String?
+  notes           String?
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  @@index([order_id])
+  @@index([customer_id])
+  @@index([status])
+  @@map("shipments")
+}
+
+model refund {
+  id             Int          @id @default(autoincrement())
+  refund_number  String       @unique
+  order_id       Int?
+  order          order?       @relation(fields: [order_id], references: [id])
+  invoice_id     Int?
+  invoice        invoice?     @relation(fields: [invoice_id], references: [id])
+  customer_id    Int?
+  customer       customer?    @relation(fields: [customer_id], references: [id])
+  refund_type    RefundType   @default(DIRECT_TRANSFER)
+  amount         Decimal      @db.Decimal(18, 2)
+  reason         String
+  status         RefundStatus @default(REQUESTED)
+  source         RefundSource @default(MANUAL)
+  source_key     String?      @unique
+  auto_generated Boolean      @default(false)
+  refunded_at    DateTime?
+  notes          String?
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
+  deleted_at     DateTime?
+  deleted_by_id  Int?
+
+  @@index([order_id, status])
+  @@index([invoice_id, status])
+  @@index([customer_id, status])
+  @@index([deleted_at])
+  @@map("refunds")
+}
+
+model invoice {
+  id                 Int             @id @default(autoincrement())
+  invoice_number     String          @unique
+  customer_id        Int
+  customer           customer        @relation(fields: [customer_id], references: [id])
+  invoice_date       DateTime        @default(now())
+  due_date           DateTime?
+  status             InvoiceStatus   @default(ISSUED)
+  total_bill         Decimal         @default(0) @db.Decimal(18, 2)
+  paid_amount        Decimal         @default(0) @db.Decimal(18, 2)
+  outstanding_amount Decimal         @default(0) @db.Decimal(18, 2)
+  overpayment_amount Decimal         @default(0) @db.Decimal(18, 2)
+  deposit_amount     Decimal         @default(0) @db.Decimal(18, 2)
+  use_deposit        Boolean         @default(false)
+  notes              String?
+  billing_model      String?         @default("FLEXIBLE")
+  dp_percent         Int?
+  dp_amount          Decimal?        @db.Decimal(18, 2)
+  dp_settlement_note String?
+  whatsapp_message   String?
+  orders             invoice_order[]
+  payments           payment[]
+  refunds            refund[]
+  created_at         DateTime        @default(now())
+  updated_at         DateTime        @updatedAt
+  deleted_at         DateTime?
+  deleted_by_id      Int?
+
+  @@index([customer_id, invoice_date])
+  @@index([status, due_date])
+  @@index([deleted_at])
+  @@map("invoices")
+}
+
+model invoice_order {
+  id              Int      @id @default(autoincrement())
+  invoice_id      Int
+  invoice         invoice  @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  order_id        Int      @unique
+  order           order    @relation(fields: [order_id], references: [id])
+  snapshot_amount Decimal  @db.Decimal(18, 2)
+  created_at      DateTime @default(now())
+
+  @@index([invoice_id])
+  @@map("invoice_orders")
+}
+
+model inventory_movement {
+  id             Int      @id @default(autoincrement())
+  product_id     Int
+  product        product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  movement_type  String
+  quantity       Int
+  balance_after  Int
+  reference_type String?
+  reference_id   String?
+  notes          String?
+  user_id        Int?
+  user           user?    @relation(fields: [user_id], references: [id])
+  created_at     DateTime @default(now())
+
+  @@index([product_id, created_at])
+  @@index([reference_type, reference_id])
+  @@map("inventory_movements")
+}
+
+model currency {
+  code       String          @id
+  name       String
+  symbol     String
+  is_active  Boolean         @default(true)
+  rates      exchange_rate[]
+  created_at DateTime        @default(now())
+
+  @@map("currencies")
+}
+
+model exchange_rate {
+  id            Int      @id @default(autoincrement())
+  currency_code String
+  currency      currency @relation(fields: [currency_code], references: [code])
+  rate_to_idr   Decimal  @db.Decimal(18, 4)
+  effective_at  DateTime
+  source        String?
+  created_at    DateTime @default(now())
+
+  @@index([currency_code, effective_at])
+  @@map("exchange_rates")
+}
+
+model notification {
+  id         Int              @id @default(autoincrement())
+  user_id    Int?
+  user       user?            @relation(fields: [user_id], references: [id])
+  type       NotificationType
+  title      String
+  message    String
+  link       String?
+  dedupe_key String?          @unique
+  is_read    Boolean          @default(false)
+  created_at DateTime         @default(now())
+
+  @@index([user_id, is_read])
+  @@map("notifications")
+}
+
+model setting {
+  id         Int      @id @default(autoincrement())
+  key        String   @unique
+  value      Json
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("settings")
+}
