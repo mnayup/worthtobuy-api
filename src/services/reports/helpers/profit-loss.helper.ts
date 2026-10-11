@@ -1,41 +1,69 @@
 export function calculateReadyStockValuation(readyStockProducts: any[]) {
   const readyStockTotalCapital = readyStockProducts.reduce(
-    (sum, p) => sum + p.stockQuantity * Number(p.buyPrice || 0),
+    (sum, p) =>
+      sum +
+      Number(p.stock_quantity ?? p.stockQuantity ?? 0) *
+        Number(p.buy_price ?? p.buyPrice ?? 0),
     0
   );
   const readyStockAvailableCapital = readyStockProducts.reduce(
-    (sum, p) => sum + Math.max(0, p.stockQuantity - p.reservedQuantity) * Number(p.buyPrice || 0),
+    (sum, p) => {
+      const stock = Number(p.stock_quantity ?? p.stockQuantity ?? 0);
+      const reserved = Number(p.reserved_quantity ?? p.reservedQuantity ?? 0);
+      return sum + Math.max(0, stock - reserved) * Number(p.buy_price ?? p.buyPrice ?? 0);
+    },
     0
   );
   const readyStockPotentialSales = readyStockProducts.reduce(
-    (sum, p) => sum + p.stockQuantity * Number(p.sellingPrice || 0),
+    (sum, p) =>
+      sum +
+      Number(p.stock_quantity ?? p.stockQuantity ?? 0) *
+        Number(p.selling_price ?? p.sellingPrice ?? 0),
     0
   );
   const readyStockPotentialProfit = readyStockPotentialSales - readyStockTotalCapital;
-  const readyStockUnits = readyStockProducts.reduce((sum, p) => sum + p.stockQuantity, 0);
+  const readyStockUnits = readyStockProducts.reduce(
+    (sum, p) => sum + Number(p.stock_quantity ?? p.stockQuantity ?? 0),
+    0
+  );
   const readyStockAvailableUnits = readyStockProducts.reduce(
-    (sum, p) => sum + Math.max(0, p.stockQuantity - p.reservedQuantity),
+    (sum, p) => {
+      const stock = Number(p.stock_quantity ?? p.stockQuantity ?? 0);
+      const reserved = Number(p.reserved_quantity ?? p.reservedQuantity ?? 0);
+      return sum + Math.max(0, stock - reserved);
+    },
     0
   );
 
-  const readyStockItems = readyStockProducts.slice(0, 50).map((p) => ({
-    id: p.id,
-    sku: p.sku,
-    name: p.name,
-    brandName: p.brandName || '-',
-    stockQuantity: p.stockQuantity,
-    reservedQuantity: p.reservedQuantity,
-    availableQuantity: Math.max(0, p.stockQuantity - p.reservedQuantity),
-    buyPrice: Number(p.buyPrice || 0),
-    sellingPrice: Number(p.sellingPrice || 0),
-    totalCapitalValue: p.stockQuantity * Number(p.buyPrice || 0),
-    totalPotentialSales: p.stockQuantity * Number(p.sellingPrice || 0),
-    potentialProfit: (Number(p.sellingPrice || 0) - Number(p.buyPrice || 0)) * p.stockQuantity,
-    marginPercent:
-      Number(p.sellingPrice) > 0
-        ? ((Number(p.sellingPrice) - Number(p.buyPrice)) / Number(p.sellingPrice)) * 100
-        : 0,
-  }));
+  const readyStockItems = readyStockProducts.slice(0, 50).map((p) => {
+    const stock = Number(p.stock_quantity ?? p.stockQuantity ?? 0);
+    const reserved = Number(p.reserved_quantity ?? p.reservedQuantity ?? 0);
+    const buyPrice = Number(p.buy_price ?? p.buyPrice ?? 0);
+    const sellingPrice = Number(p.selling_price ?? p.sellingPrice ?? 0);
+    const available = Math.max(0, stock - reserved);
+
+    return {
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      brandName: p.brand_name || p.brandName || '-',
+      brand_name: p.brand_name || p.brandName || '-',
+      stockQuantity: stock,
+      stock_quantity: stock,
+      reservedQuantity: reserved,
+      reserved_quantity: reserved,
+      availableQuantity: available,
+      available_quantity: available,
+      buyPrice,
+      buy_price: buyPrice,
+      sellingPrice,
+      selling_price: sellingPrice,
+      totalCapitalValue: stock * buyPrice,
+      totalPotentialSales: stock * sellingPrice,
+      potentialProfit: (sellingPrice - buyPrice) * stock,
+      marginPercent: sellingPrice > 0 ? ((sellingPrice - buyPrice) / sellingPrice) * 100 : 0,
+    };
+  });
 
   return {
     totalCapitalValue: readyStockTotalCapital,
@@ -58,15 +86,22 @@ export function computeFinancialOrderTotals(financialOrders: Array<{ order: any;
   let discountTotal = 0;
 
   financialOrders.forEach(({ order, ratio }) => {
-    goodsRevenue += Number(order.productSubtotalIdr || 0) * ratio;
-    serviceFeeIncome += Number(order.serviceFee || 0) * ratio;
-    otherFeeIncome +=
-      (Number(order.customerShipping || 0) +
-        Number(order.localShipping || 0) +
-        Number(order.internationalShipping || 0) +
-        Number(order.additionalFee || 0)) *
-      ratio;
-    discountTotal += Number(order.discount || 0) * ratio;
+    const subtotal = Number(order.subtotal_idr ?? order.productSubtotalIdr ?? 0);
+    const serviceFee = Number(order.service_fee_amount ?? order.serviceFee ?? 0);
+    const shipping = Number(
+      order.customer_shipping_cost ??
+        order.customerShipping ??
+        order.shipping_cost ??
+        order.localShipping ??
+        0
+    );
+    const addFee = Number(order.additional_fee ?? order.additionalFee ?? 0);
+    const discount = Number(order.discount_amount ?? order.discount ?? 0);
+
+    goodsRevenue += subtotal * ratio;
+    serviceFeeIncome += serviceFee * ratio;
+    otherFeeIncome += (shipping + addFee) * ratio;
+    discountTotal += discount * ratio;
   });
 
   return { goodsRevenue, serviceFeeIncome, otherFeeIncome, discountTotal };

@@ -110,21 +110,36 @@ export class InvoicesService {
   }
 
   async create(body: any) {
-    const orders = await validateInvoiceOrders(this.prisma, body.customer_id, body.orderIds);
+    const customer_id = body.customer_id ? Number(body.customer_id) : body.customerId ? Number(body.customerId) : null;
+    const orderIds = body.order_ids ?? body.orderIds ?? [];
+    const orders = await validateInvoiceOrders(this.prisma, customer_id, orderIds);
     const total_bill = orders.reduce((sum, order) => sum + Number(order.total_bill), 0);
     const legacyInvoiceIds = extractLegacyInvoiceIds(orders);
 
-    const deposit_amount = body.use_deposit ? Number(body.deposit_amount || 0) : 0;
-    const use_deposit = Boolean(body.use_deposit && deposit_amount > 0);
+    const rawUseDeposit = body.use_deposit ?? body.useDeposit;
+    const rawDepositAmount = body.deposit_amount ?? body.depositAmount;
+    const deposit_amount = rawUseDeposit ? Number(rawDepositAmount || 0) : 0;
+    const use_deposit = Boolean(rawUseDeposit && deposit_amount > 0);
 
-    if (use_deposit && deposit_amount > 0) {
-      const depositData = await this.customersService.getDepositBalance(body.customer_id);
+    if (use_deposit && deposit_amount > 0 && customer_id) {
+      const depositData = await this.customersService.getDepositBalance(customer_id);
       if (deposit_amount > depositData.availableDeposit) {
         throw new BadRequestException(
           `Jumlah deposit melebihi saldo deposit pelanggan (Tersedia: Rp ${depositData.availableDeposit.toLocaleString('id-ID')}).`
         );
       }
     }
+
+    const dpPercent = body.dp_percent !== undefined ? body.dp_percent : body.dpPercent;
+    const dpAmount = body.dp_amount !== undefined ? body.dp_amount : body.dpAmount;
+    const dp_percent = dpPercent !== undefined && dpPercent !== null ? Number(dpPercent) : null;
+    const dp_amount = dpAmount !== undefined && dpAmount !== null ? Number(dpAmount) : null;
+    const dp_settlement_note = body.dp_settlement_note || body.dpSettlementNote || null;
+    const whatsapp_message = body.whatsapp_message || body.whatsappMessage || null;
+    const billing_model = body.billing_model || body.billingModel || null;
+    const invoice_number = body.invoice_number || body.invoiceNumber || sequence('WTB-INV');
+    const invoice_date = body.invoice_date || body.invoiceDate ? new Date(body.invoice_date || body.invoiceDate) : new Date();
+    const due_date = body.due_date || body.dueDate ? new Date(body.due_date || body.dueDate) : null;
 
     const data = await this.prisma.$transaction(async (tx) => {
       if (legacyInvoiceIds.length) {
@@ -135,20 +150,20 @@ export class InvoicesService {
       }
       return tx.invoice.create({
         data: {
-          invoice_number: body.invoice_number || sequence('WTB-INV'),
-          customer_id: body.customer_id,
-          invoice_date: body.invoice_date || new Date(),
-          due_date: body.due_date || null,
+          invoice_number,
+          customer_id: customer_id!,
+          invoice_date,
+          due_date,
           total_bill,
           deposit_amount,
           use_deposit,
           outstanding_amount: Math.max(0, total_bill - deposit_amount),
           notes: body.notes || null,
-          billing_model: body.billing_model || null,
-          dp_percent: body.dp_percent !== undefined && body.dp_percent !== null ? Number(body.dp_percent) : null,
-          dp_amount: body.dp_amount !== undefined && body.dp_amount !== null ? Number(body.dp_amount) : null,
-          dp_settlement_note: body.dp_settlement_note || null,
-          whatsapp_message: body.whatsapp_message || null,
+          billing_model,
+          dp_percent,
+          dp_amount,
+          dp_settlement_note,
+          whatsapp_message,
           orders: { create: orders.map((order) => ({ order_id: order.id, snapshot_amount: order.total_bill })) },
         },
         include: { customer: true, orders: { include: { order: { include: { period: true } } } } },
@@ -156,7 +171,9 @@ export class InvoicesService {
     });
 
     await this.invoiceCalcService.refreshInvoicePayment(data.id);
-    await this.customersService.recalculateCustomerDeposit(body.customer_id);
+    if (customer_id) {
+      await this.customersService.recalculateCustomerDeposit(customer_id);
+    }
     await this.prisma.notification.create({
       data: {
         type: 'ORDER',
@@ -174,19 +191,23 @@ export class InvoicesService {
       include: { payments: { where: { deleted_at: null } }, refunds: { where: { deleted_at: null } }, orders: true },
     });
 
-    const customer_id = body.customer_id ?? current.customer_id;
-    const selectedOrderIds = body.orderIds ?? current.orders.map((link) => link.order_id);
+    const customer_id = body.customer_id !== undefined ? Number(body.customer_id) : body.customerId !== undefined ? Number(body.customerId) : current.customer_id;
+    const selectedOrderIds = body.order_ids ?? body.orderIds ?? current.orders.map((link) => link.order_id);
+    const hasOrderChange = body.order_ids !== undefined || body.orderIds !== undefined || body.customer_id !== undefined || body.customerId !== undefined;
 
-    if ((body.orderIds || body.customer_id !== undefined) && (current.payments.length || current.refunds.some((r) => r.status !== 'REJECTED'))) {
+    if (hasOrderChange && (current.payments.length || current.refunds.some((r) => r.status !== 'REJECTED'))) {
       throw new BadRequestException('Komposisi pesanan atau pelanggan tidak dapat diubah setelah invoice memiliki histori transaksi.');
     }
+
+    const rawUseDeposit = body.use_deposit !== undefined ? body.use_deposit : body.useDeposit;
+    const rawDepositAmount = body.deposit_amount !== undefined ? body.deposit_amount : body.depositAmount;
 
     let deposit_amount = Number(current.deposit_amount || 0);
     let use_deposit = current.use_deposit;
 
-    if (body.use_deposit !== undefined || body.deposit_amount !== undefined) {
-      const nextUseDeposit = body.use_deposit !== undefined ? Boolean(body.use_deposit) : current.use_deposit;
-      const requestedAmount = body.deposit_amount !== undefined ? Number(body.deposit_amount) : Number(current.deposit_amount || 0);
+    if (rawUseDeposit !== undefined || rawDepositAmount !== undefined) {
+      const nextUseDeposit = rawUseDeposit !== undefined ? Boolean(rawUseDeposit) : current.use_deposit;
+      const requestedAmount = rawDepositAmount !== undefined ? Number(rawDepositAmount) : Number(current.deposit_amount || 0);
       deposit_amount = nextUseDeposit ? requestedAmount : 0;
       use_deposit = Boolean(nextUseDeposit && deposit_amount > 0);
 
@@ -200,8 +221,19 @@ export class InvoicesService {
       }
     }
 
+    const dpPercent = body.dp_percent !== undefined ? body.dp_percent : body.dpPercent;
+    const dpAmount = body.dp_amount !== undefined ? body.dp_amount : body.dpAmount;
+    const dp_percent = dpPercent !== undefined ? (dpPercent !== null ? Number(dpPercent) : null) : undefined;
+    const dp_amount = dpAmount !== undefined ? (dpAmount !== null ? Number(dpAmount) : null) : undefined;
+    const dp_settlement_note = body.dp_settlement_note !== undefined ? body.dp_settlement_note : body.dpSettlementNote !== undefined ? body.dpSettlementNote : undefined;
+    const whatsapp_message = body.whatsapp_message !== undefined ? body.whatsapp_message : body.whatsappMessage;
+    const billing_model = body.billing_model !== undefined ? body.billing_model : body.billingModel;
+    const invoice_number = body.invoice_number !== undefined ? body.invoice_number : body.invoiceNumber;
+    const invoice_date = body.invoice_date !== undefined ? new Date(body.invoice_date) : body.invoiceDate !== undefined ? new Date(body.invoiceDate) : undefined;
+    const due_date = body.due_date !== undefined ? (body.due_date ? new Date(body.due_date) : null) : body.dueDate !== undefined ? (body.dueDate ? new Date(body.dueDate) : null) : undefined;
+
     let total_bill = Number(current.total_bill);
-    if (body.orderIds || body.customer_id !== undefined) {
+    if (hasOrderChange) {
       const orders = await validateInvoiceOrders(this.prisma, customer_id, selectedOrderIds, id);
       total_bill = orders.reduce((sum, order) => sum + Number(order.total_bill), 0);
       const legacyInvoiceIds = extractLegacyInvoiceIds(orders, id);
@@ -221,15 +253,15 @@ export class InvoicesService {
           where: { id },
           data: {
             customer_id,
-            invoice_number: body.invoice_number,
-            invoice_date: body.invoice_date,
-            due_date: body.due_date,
+            invoice_number,
+            invoice_date,
+            due_date,
             notes: body.notes,
-            billing_model: body.billing_model,
-            dp_percent: body.dp_percent !== undefined ? (body.dp_percent !== null ? Number(body.dp_percent) : null) : undefined,
-            dp_amount: body.dp_amount !== undefined ? (body.dp_amount !== null ? Number(body.dp_amount) : null) : undefined,
-            dp_settlement_note: body.dp_settlement_note !== undefined ? body.dp_settlement_note : undefined,
-            whatsapp_message: body.whatsapp_message,
+            billing_model,
+            dp_percent,
+            dp_amount,
+            dp_settlement_note,
+            whatsapp_message,
             total_bill,
             deposit_amount,
             use_deposit,
@@ -240,16 +272,16 @@ export class InvoicesService {
       await this.prisma.invoice.update({
         where: { id },
         data: {
-          customer_id: body.customer_id,
-          invoice_number: body.invoice_number,
-          invoice_date: body.invoice_date,
-          due_date: body.due_date,
+          customer_id,
+          invoice_number,
+          invoice_date,
+          due_date,
           notes: body.notes,
-          billing_model: body.billing_model,
-          dp_percent: body.dp_percent !== undefined ? (body.dp_percent !== null ? Number(body.dp_percent) : null) : undefined,
-          dp_amount: body.dp_amount !== undefined ? (body.dp_amount !== null ? Number(body.dp_amount) : null) : undefined,
-          dp_settlement_note: body.dp_settlement_note !== undefined ? body.dp_settlement_note : undefined,
-          whatsapp_message: body.whatsapp_message,
+          billing_model,
+          dp_percent,
+          dp_amount,
+          dp_settlement_note,
+          whatsapp_message,
           deposit_amount,
           use_deposit,
         },

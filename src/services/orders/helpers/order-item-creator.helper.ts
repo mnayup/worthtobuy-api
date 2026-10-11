@@ -7,9 +7,10 @@ export async function createOrderItemWithProduct(
   orderId: number,
   fallbackPeriodId: number | null,
   userId: number | undefined,
-  stockService: StockService
+  stockService: StockService,
+  sharedProductId?: number | null
 ) {
-  const pId = item.product_id || item.productId;
+  let pId = item.product_id || item.productId || (sharedProductId ?? null);
   const newProd = item.new_product || item.newProduct;
   const manualName = item.manual_product_name || item.manualProductName || item.name;
 
@@ -22,9 +23,12 @@ export async function createOrderItemWithProduct(
         name: pData.name || pData.product_name || pData.productName || manualName || 'New Product',
         category: pData.category || null,
         brand_name: pData.brand_name || pData.brandName || null,
+        variant: pData.variant || pData.variation || item.variation || null,
+        size: pData.size || item.size || null,
         store_location: pData.store_location || pData.storeLocation || null,
         product_url: pData.product_url || pData.productUrl || null,
         image_url: pData.image_url || pData.imageUrl || null,
+        image_urls: pData.image_urls || (pData.image_url || pData.imageUrl ? [pData.image_url || pData.imageUrl] : []),
         default_currency: pData.default_currency || pData.defaultCurrency || 'IDR',
         stock_mode: pData.stock_mode || pData.stockMode || 'EVENT',
         stock_quantity: stockQty,

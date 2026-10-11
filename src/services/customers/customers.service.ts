@@ -188,25 +188,41 @@ export class CustomersService {
     });
   }
 
+  private cleanCustomerData(body: any) {
+    const full_name = body.full_name !== undefined ? body.full_name : body.fullName;
+    const customer_code = body.customer_code !== undefined ? body.customer_code : body.customerCode;
+    const postal_code = body.postal_code !== undefined ? body.postal_code : body.postalCode;
+    const social_username = body.social_username !== undefined ? body.social_username : body.socialUsername;
+    const deposit_balance = body.deposit_balance !== undefined ? body.deposit_balance : body.depositBalance;
+
+    const data: any = {};
+    if (full_name !== undefined) data.full_name = String(full_name).trim();
+    if (customer_code !== undefined) data.customer_code = String(customer_code).trim();
+    if (body.whatsapp !== undefined) data.whatsapp = normalizeWhatsapp(String(body.whatsapp || ''));
+    if (body.email !== undefined) data.email = body.email ? String(body.email).toLowerCase().trim() : null;
+    if (body.address !== undefined) data.address = body.address ? String(body.address).trim() : null;
+    if (body.city !== undefined) data.city = body.city ? String(body.city).trim() : null;
+    if (postal_code !== undefined) data.postal_code = postal_code ? String(postal_code).trim() : null;
+    if (social_username !== undefined) data.social_username = social_username ? String(social_username).trim() : null;
+    if (body.notes !== undefined) data.notes = body.notes ? String(body.notes).trim() : null;
+    if (body.segment !== undefined) data.segment = body.segment;
+    if (body.status !== undefined) data.status = typeof body.status === 'boolean' ? (body.status ? 'active' : 'inactive') : String(body.status);
+    if (deposit_balance !== undefined) data.deposit_balance = Number(deposit_balance || 0);
+
+    return data;
+  }
+
   async create(body: any, user_id?: number) {
-    const normalized = {
-      ...body,
-      whatsapp: normalizeWhatsapp(body.whatsapp || ''),
-      email: body.email?.toLowerCase() || null,
-      customer_code: body.customer_code || sequence('CUS'),
-    };
-    await this.ensureNoDuplicate(normalized);
-    return this.prisma.customer.create({ data: normalized });
+    const data = this.cleanCustomerData(body);
+    if (!data.customer_code) data.customer_code = sequence('CUS');
+    await this.ensureNoDuplicate(data);
+    return this.prisma.customer.create({ data });
   }
 
   async update(id: number, body: any, user_id?: number) {
-    const normalized = {
-      ...body,
-      ...(body.whatsapp ? { whatsapp: normalizeWhatsapp(body.whatsapp) } : {}),
-      ...(body.email !== undefined ? { email: body.email?.toLowerCase() || null } : {}),
-    };
-    await this.ensureNoDuplicate(normalized, id);
-    return this.prisma.customer.update({ where: { id }, data: normalized });
+    const data = this.cleanCustomerData(body);
+    await this.ensureNoDuplicate(data, id);
+    return this.prisma.customer.update({ where: { id }, data });
   }
 
   async remove(id: number, user_id?: number) {

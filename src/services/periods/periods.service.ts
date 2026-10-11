@@ -79,101 +79,114 @@ export class PeriodsService implements OnModuleInit {
     return this.prisma.jastip_period.findFirstOrThrow({ where: { id, deleted_at: null } });
   }
 
-  async create(body: any, user_id?: number) {
+  private cleanPeriodData(body: any, userId?: number) {
+    const order_open_at = body.order_open_at ?? body.orderOpenAt;
+    const order_close_at = body.order_close_at ?? body.orderCloseAt;
+    const departure_at = body.departure_at ?? body.departureAt;
+    const return_at = body.return_at ?? body.returnAt;
+    const estimated_shipping_at = body.estimated_shipping_at ?? body.estimatedShippingAt;
+    const target_revenue = body.target_revenue ?? body.targetRevenue;
+    const budget_limit = body.budget_limit ?? body.budgetLimit;
+    const banner_url = body.banner_url ?? body.bannerUrl;
+    const is_shopping_live = body.is_shopping_live ?? body.isShoppingLive;
 
-    if (body.order_open_at && body.order_close_at) {
-      const open = new Date(body.order_open_at);
-      const close = new Date(body.order_close_at);
-      if (close <= open) {
+    const data: any = {
+      country: body.country || 'Indonesia',
+    };
+
+    if (body.code !== undefined) data.code = String(body.code).trim();
+    if (body.name !== undefined) data.name = String(body.name).trim();
+    if (body.description !== undefined) data.description = body.description ? String(body.description).trim() : null;
+    if (body.city !== undefined) data.city = body.city ? String(body.city).trim() : null;
+    if (body.type !== undefined) data.type = body.type;
+    if (body.status !== undefined) data.status = body.status;
+    if (order_open_at !== undefined) data.order_open_at = order_open_at ? new Date(order_open_at) : null;
+    if (order_close_at !== undefined) data.order_close_at = order_close_at ? new Date(order_close_at) : null;
+    if (departure_at !== undefined) data.departure_at = departure_at ? new Date(departure_at) : null;
+    if (return_at !== undefined) data.return_at = return_at ? new Date(return_at) : null;
+    if (estimated_shipping_at !== undefined) data.estimated_shipping_at = estimated_shipping_at ? new Date(estimated_shipping_at) : null;
+    if (target_revenue !== undefined) data.target_revenue = target_revenue ? Number(target_revenue) : null;
+    if (budget_limit !== undefined) data.budget_limit = budget_limit ? Number(budget_limit) : null;
+    if (body.notes !== undefined) data.notes = body.notes ? String(body.notes).trim() : null;
+    if (banner_url !== undefined) data.banner_url = banner_url ? String(banner_url).trim() : null;
+    if (is_shopping_live !== undefined) data.is_shopping_live = Boolean(is_shopping_live);
+    if (userId) data.created_by_id = userId;
+
+    return data;
+  }
+
+  async create(body: any, user_id?: number) {
+    const data = this.cleanPeriodData(body, user_id);
+
+    if (data.order_open_at && data.order_close_at) {
+      if (data.order_close_at <= data.order_open_at) {
         throw new BadRequestException('Orders period end must be after orders period start.');
       }
     }
     
-    if (body.departure_at && body.return_at) {
-      const dep = new Date(body.departure_at);
-      const ret = new Date(body.return_at);
-      if (ret <= dep) {
+    if (data.departure_at && data.return_at) {
+      if (data.return_at <= data.departure_at) {
         throw new BadRequestException('Event period end must be after event period start.');
       }
     }
 
-    if (body.order_close_at && body.return_at) {
-      const close = new Date(body.order_close_at);
-      const ret = new Date(body.return_at);
-      if (close > ret) {
+    if (data.order_close_at && data.return_at) {
+      if (data.order_close_at > data.return_at) {
         throw new BadRequestException('Orders period end cannot be after the event period end.');
       }
     }
     
-    if (body.estimated_shipping_at && body.return_at) {
-      const ship = new Date(body.estimated_shipping_at);
-      const ret = new Date(body.return_at);
-      if (ship < ret) {
+    if (data.estimated_shipping_at && data.return_at) {
+      if (data.estimated_shipping_at < data.return_at) {
         throw new BadRequestException('Estimated shipping time cannot be before the event period end.');
       }
     }
 
-    return this.prisma.jastip_period.create({
-      data: {
-        ...body,
-        country: 'Indonesia',
-        currency_code: 'IDR',
-        exchange_rate: 1,
-      },
-    });
+    return this.prisma.jastip_period.create({ data });
   }
 
   async update(id: number, body: any, user_id?: number) {
     const existing = await this.prisma.jastip_period.findUnique({ where: { id } });
     if (existing?.code === 'READY-STOCK') {
-      if (body.code && body.code !== 'READY-STOCK') {
+      const code = body.code;
+      const status = body.status;
+      if (code && code !== 'READY-STOCK') {
         throw new BadRequestException('Kode event Ready Stock adalah permanen dan tidak dapat diubah.');
       }
-      if (body.status && body.status !== 'OPEN') {
+      if (status && status !== 'OPEN') {
         throw new BadRequestException('Status event Ready Stock harus selalu OPEN.');
       }
     }
 
-    if (body.order_open_at && body.order_close_at) {
-      const open = new Date(body.order_open_at);
-      const close = new Date(body.order_close_at);
-      if (close <= open) {
+    const data = this.cleanPeriodData(body);
+
+    if (data.order_open_at && data.order_close_at) {
+      if (data.order_close_at <= data.order_open_at) {
         throw new BadRequestException('Orders period end must be after orders period start.');
       }
     }
     
-    if (body.departure_at && body.return_at) {
-      const dep = new Date(body.departure_at);
-      const ret = new Date(body.return_at);
-      if (ret <= dep) {
+    if (data.departure_at && data.return_at) {
+      if (data.return_at <= data.departure_at) {
         throw new BadRequestException('Event period end must be after event period start.');
       }
     }
 
-    if (body.order_close_at && body.return_at) {
-      const close = new Date(body.order_close_at);
-      const ret = new Date(body.return_at);
-      if (close > ret) {
+    if (data.order_close_at && data.return_at) {
+      if (data.order_close_at > data.return_at) {
         throw new BadRequestException('Orders period end cannot be after the event period end.');
       }
     }
     
-    if (body.estimated_shipping_at && body.return_at) {
-      const ship = new Date(body.estimated_shipping_at);
-      const ret = new Date(body.return_at);
-      if (ship < ret) {
+    if (data.estimated_shipping_at && data.return_at) {
+      if (data.estimated_shipping_at < data.return_at) {
         throw new BadRequestException('Estimated shipping time cannot be before the event period end.');
       }
     }
 
     return this.prisma.jastip_period.update({
       where: { id },
-      data: {
-        ...body,
-        country: 'Indonesia',
-        currency_code: 'IDR',
-        exchange_rate: 1,
-      },
+      data,
     });
   }
 

@@ -40,7 +40,7 @@ export class OrderItemsService {
     const status = query.status ? String(query.status) : undefined;
     const availability = query.availability ? String(query.availability) : undefined;
     const shipping = query.shipping ? String(query.shipping) : undefined;
-    const period_id = query.period_id ? Number(query.period_id) : undefined;
+    const period_id = query.period_id ? Number(query.period_id) : query.periodId ? Number(query.periodId) : undefined;
     const search = String(query.search || '').trim().slice(0, 100);
 
     const statusFilter = status
@@ -106,8 +106,10 @@ export class OrderItemsService {
     });
   }
 
-  async updateStatus(id: number, input: { status: string; kept_until?: Date | null; notes?: string | null }, user_id?: number) {
+  async updateStatus(id: number, input: { status: string; kept_until?: Date | null; keptUntil?: Date | null; notes?: string | null }, user_id?: number) {
     const current = await this.prisma.order_item.findUniqueOrThrow({ where: { id }, include: { product: true } });
+    const rawKeptUntil = input.kept_until !== undefined ? input.kept_until : input.keptUntil;
+    const kept_until = input.status === 'KEPT' && rawKeptUntil ? new Date(rawKeptUntil) : null;
 
     const data = await this.prisma.$transaction(async tx => {
       const wasFinalized = ['SHIPPED', 'DELIVERED'].includes(current.fulfillment_status);
@@ -127,7 +129,7 @@ export class OrderItemsService {
         where: { id },
         data: {
           fulfillment_status: input.status as any,
-          kept_until: input.status === 'KEPT' ? input.kept_until : null,
+          kept_until,
           status_updated_at: new Date(),
           ...(input.status === 'UNAVAILABLE' ? { purchase_status: 'OUT_OF_STOCK' } : {}),
           ...(['AVAILABLE', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(input.status) ? { purchase_status: 'PURCHASED' } : {}),

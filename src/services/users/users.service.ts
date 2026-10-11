@@ -54,7 +54,9 @@ export class UsersService {
   }
 
   async create(body: any) {
-    await this.prisma.role.findUniqueOrThrow({ where: { id: Number(body.role_id) } });
+    const role_id = body.role_id !== undefined ? Number(body.role_id) : body.roleId !== undefined ? Number(body.roleId) : null;
+    if (!role_id) throw new BadRequestException('Role wajib dipilih.');
+    await this.prisma.role.findUniqueOrThrow({ where: { id: role_id } });
 
     const name = String(body.name || '').trim();
     if (!name) throw new BadRequestException('Nama wajib diisi.');
@@ -80,6 +82,7 @@ export class UsersService {
 
     if (!body.password || body.password.length < 6) throw new BadRequestException('Password minimal 6 karakter.');
 
+    const avatarUrl = body.avatar_url !== undefined ? body.avatar_url : body.avatarUrl;
     const data = await this.prisma.user.create({
       data: {
         name,
@@ -87,8 +90,8 @@ export class UsersService {
         email: cleanEmail,
         phone,
         password_hash: await bcrypt.hash(body.password, 10),
-        role_id: Number(body.role_id),
-        avatar_url: body.avatar_url ? String(body.avatar_url).trim() : null,
+        role_id,
+        avatar_url: avatarUrl ? String(avatarUrl).trim() : null,
       },
       include: { role: true },
     });
@@ -136,23 +139,26 @@ export class UsersService {
     }
 
     if (body.phone !== undefined) updateData.phone = body.phone ? String(body.phone).trim() : null;
-    if (body.avatar_url !== undefined) updateData.avatar_url = body.avatar_url ? String(body.avatar_url).trim() : null;
+    const avatarUrl = body.avatar_url !== undefined ? body.avatar_url : body.avatarUrl;
+    if (avatarUrl !== undefined) updateData.avatar_url = avatarUrl ? String(avatarUrl).trim() : null;
 
-    if (body.role_id !== undefined && Number(body.role_id) !== current.role_id) {
-      await this.prisma.role.findUniqueOrThrow({ where: { id: Number(body.role_id) } });
+    const role_id = body.role_id !== undefined ? Number(body.role_id) : body.roleId !== undefined ? Number(body.roleId) : undefined;
+    if (role_id !== undefined && role_id !== current.role_id) {
+      await this.prisma.role.findUniqueOrThrow({ where: { id: role_id } });
       if (current.role.name === 'OWNER') {
         const ownerCount = await this.prisma.user.count({ where: { role: { name: 'OWNER' }, is_active: true, deleted_at: null } });
         if (ownerCount <= 1) throw new BadRequestException('Tidak dapat mengubah role Owner terakhir.');
       }
-      updateData.role_id = Number(body.role_id);
+      updateData.role_id = role_id;
     }
 
-    if (body.is_active !== undefined) {
-      if (current.role.name === 'OWNER' && !body.is_active) {
+    const isActive = body.is_active !== undefined ? body.is_active : body.isActive;
+    if (isActive !== undefined) {
+      if (current.role.name === 'OWNER' && !isActive) {
         const ownerCount = await this.prisma.user.count({ where: { role: { name: 'OWNER' }, is_active: true, deleted_at: null } });
         if (ownerCount <= 1) throw new BadRequestException('Tidak dapat menonaktifkan Owner terakhir.');
       }
-      updateData.is_active = Boolean(body.is_active);
+      updateData.is_active = Boolean(isActive);
     }
 
     if (body.password) {

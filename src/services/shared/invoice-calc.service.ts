@@ -76,10 +76,22 @@ export class InvoiceCalcService {
 
     const paid_amount = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
     const deposit_amount = Number(invoice.deposit_amount || 0);
-    const total_bill = Number(invoice.total_bill);
+
+    const total_bill = invoice.orders.length > 0
+      ? invoice.orders.reduce((sum, link) => {
+          const orderTotal = link.order
+            ? Number(link.order.total_bill)
+            : Number(link.snapshot_amount || 0);
+          return sum + orderTotal;
+        }, 0)
+      : Number(invoice.total_bill);
+
     const effectivePaid = paid_amount + deposit_amount;
     const outstanding_amount = Math.max(0, total_bill - effectivePaid);
-    const refundedOverpayment = paidOverpaymentRefunds.reduce((sum, refund) => sum + Number(refund.amount), 0);
+    const refundedOverpayment = paidOverpaymentRefunds.reduce(
+      (sum, refund) => sum + Number(refund.amount),
+      0
+    );
     const overpayment_amount = Math.max(0, effectivePaid - total_bill - refundedOverpayment);
 
     let status: 'ISSUED' | 'PARTIAL' | 'PAID' | 'OVERPAID' | 'REFUND_DUE' = 'ISSUED';
@@ -87,9 +99,25 @@ export class InvoiceCalcService {
     else if (outstanding_amount <= 0) status = 'PAID';
     else if (effectivePaid > 0) status = 'PARTIAL';
 
+    let nextDpAmount: number | undefined;
+    if (invoice.billing_model === 'DP') {
+      if (invoice.dp_percent) {
+        nextDpAmount = Math.round((total_bill * invoice.dp_percent) / 100);
+      } else if (invoice.dp_amount) {
+        nextDpAmount = Number(invoice.dp_amount);
+      }
+    }
+
     await this.prisma.invoice.update({
       where: { id: invoice_id },
-      data: { paid_amount, outstanding_amount, overpayment_amount, status },
+      data: {
+        total_bill,
+        paid_amount,
+        outstanding_amount,
+        overpayment_amount,
+        status,
+        ...(nextDpAmount !== undefined ? { dp_amount: nextDpAmount } : {}),
+      },
     });
 
     const directByOrder = new Map<number, number>();

@@ -3,6 +3,63 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { sequence } from '../../common/utils/http.utils';
 
+function cleanPaymentData(body: any): any {
+  if (!body || typeof body !== 'object') return {};
+  const cleaned: any = {};
+
+  if (body.payment_number !== undefined || body.paymentNumber !== undefined) {
+    const val = body.payment_number !== undefined ? body.payment_number : body.paymentNumber;
+    cleaned.payment_number = val ? String(val).trim() : undefined;
+  }
+  if (body.order_id !== undefined || body.orderId !== undefined) {
+    const val = body.order_id !== undefined ? body.order_id : body.orderId;
+    cleaned.order_id = val ? Number(val) : null;
+  }
+  if (body.invoice_id !== undefined || body.invoiceId !== undefined) {
+    const val = body.invoice_id !== undefined ? body.invoice_id : body.invoiceId;
+    cleaned.invoice_id = val ? Number(val) : null;
+  }
+  if (body.payment_date !== undefined || body.paymentDate !== undefined) {
+    const val = body.payment_date !== undefined ? body.payment_date : body.paymentDate;
+    cleaned.payment_date = val ? new Date(val) : new Date();
+  }
+  if (body.amount !== undefined) {
+    cleaned.amount = Number(body.amount);
+  }
+  if (body.method !== undefined || body.payment_method !== undefined || body.paymentMethod !== undefined) {
+    const val = body.method !== undefined ? body.method : body.payment_method !== undefined ? body.payment_method : body.paymentMethod;
+    cleaned.method = val ? String(val).trim() : 'TRANSFER';
+  }
+  if (body.destination_account !== undefined || body.destinationAccount !== undefined) {
+    const val = body.destination_account !== undefined ? body.destination_account : body.destinationAccount;
+    cleaned.destination_account = val ? String(val).trim() : null;
+  }
+  if (
+    body.proof_url !== undefined ||
+    body.proofUrl !== undefined ||
+    body.payment_proof_url !== undefined ||
+    body.paymentProofUrl !== undefined
+  ) {
+    const val =
+      body.proof_url !== undefined
+        ? body.proof_url
+        : body.proofUrl !== undefined
+        ? body.proofUrl
+        : body.payment_proof_url !== undefined
+        ? body.payment_proof_url
+        : body.paymentProofUrl;
+    cleaned.proof_url = val ? String(val).trim() : null;
+  }
+  if (body.status !== undefined) {
+    cleaned.status = body.status;
+  }
+  if (body.notes !== undefined) {
+    cleaned.notes = body.notes ? String(body.notes).trim() : null;
+  }
+
+  return cleaned;
+}
+
 @Injectable()
 export class PaymentsService {
   constructor(
@@ -65,7 +122,11 @@ export class PaymentsService {
   }
 
   async create(body: any, user_id?: number) {
-    if (Number(Boolean(body.order_id)) + Number(Boolean(body.invoice_id)) !== 1) {
+    const cleaned = cleanPaymentData(body);
+    const order_id = cleaned.order_id ?? null;
+    const invoice_id = cleaned.invoice_id ?? null;
+
+    if (Number(Boolean(order_id)) + Number(Boolean(invoice_id)) !== 1) {
       throw new BadRequestException('Pilih tepat satu target: invoice atau pesanan.');
     }
 
@@ -73,9 +134,9 @@ export class PaymentsService {
     const recentDuplicate = await this.prisma.payment.findFirst({
       where: {
         deleted_at: null,
-        order_id: body.order_id || null,
-        invoice_id: body.invoice_id || null,
-        amount: body.amount,
+        order_id: order_id || null,
+        invoice_id: invoice_id || null,
+        amount: cleaned.amount,
         created_at: { gte: new Date(Date.now() - 15 * 1000) },
       },
     });
@@ -84,13 +145,13 @@ export class PaymentsService {
     }
 
     // Prevent duplicate upload of the exact same proof receipt URL
-    if (body.proof_url) {
+    if (cleaned.proof_url) {
       const sameProof = await this.prisma.payment.findFirst({
         where: {
           deleted_at: null,
-          order_id: body.order_id || null,
-          invoice_id: body.invoice_id || null,
-          proof_url: body.proof_url,
+          order_id: order_id || null,
+          invoice_id: invoice_id || null,
+          proof_url: cleaned.proof_url,
         },
       });
       if (sameProof) {
@@ -100,14 +161,14 @@ export class PaymentsService {
 
     // If target is already fully paid, prevent adding another same-day identical payment
     let target: { outstanding_amount: any } | null = null;
-    if (body.invoice_id) {
-      target = await this.prisma.invoice.findUnique({ where: { id: Number(body.invoice_id) } });
-    } else if (body.order_id) {
-      target = await this.prisma.order.findUnique({ where: { id: Number(body.order_id) } });
+    if (invoice_id) {
+      target = await this.prisma.invoice.findUnique({ where: { id: Number(invoice_id) } });
+    } else if (order_id) {
+      target = await this.prisma.order.findUnique({ where: { id: Number(order_id) } });
     }
 
     if (target && Number(target.outstanding_amount) <= 0) {
-      const payment_date = body.payment_date ? new Date(body.payment_date) : new Date();
+      const payment_date = cleaned.payment_date ? new Date(cleaned.payment_date) : new Date();
       const start = new Date(payment_date);
       start.setHours(0, 0, 0, 0);
       const end = new Date(start);
@@ -116,10 +177,10 @@ export class PaymentsService {
       const duplicate = await this.prisma.payment.findFirst({
         where: {
           deleted_at: null,
-          order_id: body.order_id || null,
-          invoice_id: body.invoice_id || null,
-          amount: body.amount,
-          method: body.method,
+          order_id: order_id || null,
+          invoice_id: invoice_id || null,
+          amount: cleaned.amount,
+          method: cleaned.method,
           payment_date: { gte: start, lt: end },
         },
       });
@@ -130,11 +191,11 @@ export class PaymentsService {
 
     const data = await this.prisma.payment.create({
       data: {
-        ...body,
-        order_id: body.order_id || null,
-        invoice_id: body.invoice_id || null,
-        payment_number: body.payment_number || sequence('PAY'),
-        verified_by_id: body.status === 'VERIFIED' ? user_id : null,
+        ...cleaned,
+        order_id: order_id || null,
+        invoice_id: invoice_id || null,
+        payment_number: cleaned.payment_number || sequence('PAY'),
+        verified_by_id: cleaned.status === 'VERIFIED' ? user_id : null,
       },
       include: { order: { include: { customer: true } }, invoice: { include: { customer: true } } },
     });
@@ -158,8 +219,9 @@ export class PaymentsService {
 
   async update(id: number, body: any, user_id?: number) {
     const current = await this.prisma.payment.findUniqueOrThrow({ where: { id } });
-    const resolvedOrderId = body.order_id === undefined ? current.order_id : body.order_id || null;
-    const resolvedInvoiceId = body.invoice_id === undefined ? current.invoice_id : body.invoice_id || null;
+    const cleaned = cleanPaymentData(body);
+    const resolvedOrderId = cleaned.order_id === undefined ? current.order_id : cleaned.order_id || null;
+    const resolvedInvoiceId = cleaned.invoice_id === undefined ? current.invoice_id : cleaned.invoice_id || null;
 
     if (Number(Boolean(resolvedOrderId)) + Number(Boolean(resolvedInvoiceId)) !== 1) {
       throw new BadRequestException('Pilih tepat satu target pembayaran: invoice atau pesanan.');
@@ -168,10 +230,10 @@ export class PaymentsService {
     const data = await this.prisma.payment.update({
       where: { id: current.id },
       data: {
-        ...body,
-        order_id: body.order_id === undefined ? undefined : body.order_id || null,
-        invoice_id: body.invoice_id === undefined ? undefined : body.invoice_id || null,
-        verified_by_id: body.status === 'VERIFIED' ? user_id : body.status ? null : undefined,
+        ...cleaned,
+        order_id: cleaned.order_id === undefined ? undefined : cleaned.order_id || null,
+        invoice_id: cleaned.invoice_id === undefined ? undefined : cleaned.invoice_id || null,
+        verified_by_id: cleaned.status === 'VERIFIED' ? user_id : cleaned.status ? null : undefined,
       },
     });
 

@@ -51,6 +51,8 @@ export class ProductsService {
             { name: { contains: search, mode: 'insensitive' } },
             { sku: { contains: search, mode: 'insensitive' } },
             { brand_name: { contains: search, mode: 'insensitive' } },
+            { variant: { contains: search, mode: 'insensitive' } },
+            { size: { contains: search, mode: 'insensitive' } },
             { category: { contains: search, mode: 'insensitive' } },
             { store_location: { contains: search, mode: 'insensitive' } },
             { notes: { contains: search, mode: 'insensitive' } },
@@ -94,23 +96,40 @@ export class ProductsService {
       ...raw
     } = body;
 
+    const variant = raw.variant !== undefined ? raw.variant : raw.variation;
+    const size = raw.size !== undefined ? raw.size : null;
+    const rawImageUrls = raw.image_urls !== undefined ? raw.image_urls : raw.imageUrls;
+    const rawImageUrl = raw.image_url !== undefined ? raw.image_url : raw.imageUrl;
+
+    let imageUrls: string[] = [];
+    if (Array.isArray(rawImageUrls)) {
+      imageUrls = rawImageUrls.filter(Boolean).map(String);
+    } else if (rawImageUrl) {
+      imageUrls = [String(rawImageUrl).trim()];
+    }
+
+    const primaryImage = imageUrls.length > 0 ? imageUrls[0] : (rawImageUrl ? String(rawImageUrl).trim() : null);
+
     const data: any = {
       sku: raw.sku ? String(raw.sku).trim() : sequence('SKU'),
       name: String(raw.name || '').trim(),
       category: raw.category ? String(raw.category).trim() : null,
-      brand_name: raw.brand_name ? String(raw.brand_name).trim() : null,
-      store_location: raw.store_location ? String(raw.store_location).trim() : null,
-      product_url: raw.product_url ? String(raw.product_url).trim() : null,
-      image_url: raw.image_url ? String(raw.image_url).trim() : null,
+      brand_name: raw.brand_name || raw.brandName ? String(raw.brand_name || raw.brandName).trim() : null,
+      variant: variant ? String(variant).trim() : null,
+      size: size ? String(size).trim() : null,
+      store_location: raw.store_location || raw.storeLocation ? String(raw.store_location || raw.storeLocation).trim() : null,
+      product_url: raw.product_url || raw.productUrl ? String(raw.product_url || raw.productUrl).trim() : null,
+      image_url: primaryImage,
+      image_urls: imageUrls,
       default_currency: 'IDR',
-      stock_mode: raw.stock_mode || 'EVENT',
-      stock_quantity: Number(raw.stock_quantity || 0),
-      buy_price: Number(raw.buy_price || 0),
-      selling_price: Number(raw.selling_price || 0),
-      low_stock_threshold: Number(raw.low_stock_threshold || 0),
+      stock_mode: raw.stock_mode || raw.stockMode || 'EVENT',
+      stock_quantity: Number(raw.stock_quantity ?? raw.stockQuantity ?? 0),
+      buy_price: Number(raw.buy_price ?? raw.buyPrice ?? 0),
+      selling_price: Number(raw.selling_price ?? raw.sellingPrice ?? 0),
+      low_stock_threshold: Number(raw.low_stock_threshold ?? raw.lowStockThreshold ?? 0),
       notes: raw.notes ? String(raw.notes).trim() : null,
-      period_id: raw.period_id ? Number(raw.period_id) : null,
-      is_active: raw.is_active !== undefined ? Boolean(raw.is_active) : true,
+      period_id: raw.period_id || raw.periodId ? Number(raw.period_id || raw.periodId) : null,
+      is_active: (raw.is_active !== undefined ? raw.is_active : raw.isActive) !== undefined ? Boolean(raw.is_active ?? raw.isActive) : true,
     };
 
     return this.prisma.$transaction(async tx => {
@@ -144,27 +163,57 @@ export class ProductsService {
 
     const {
       stock_quantity,
+      stockQuantity,
       periodId_option,
       stockMode_option,
       ...raw
     } = body;
+
+    const brandName = raw.brand_name !== undefined ? raw.brand_name : raw.brandName;
+    const variant = raw.variant !== undefined ? raw.variant : raw.variation;
+    const size = raw.size !== undefined ? raw.size : undefined;
+    const storeLocation = raw.store_location !== undefined ? raw.store_location : raw.storeLocation;
+    const productUrl = raw.product_url !== undefined ? raw.product_url : raw.productUrl;
+    const rawImageUrls = raw.image_urls !== undefined ? raw.image_urls : raw.imageUrls;
+    const imageUrl = raw.image_url !== undefined ? raw.image_url : raw.imageUrl;
+    const stockMode = raw.stock_mode !== undefined ? raw.stock_mode : raw.stockMode;
+    const buyPrice = raw.buy_price !== undefined ? raw.buy_price : raw.buyPrice;
+    const sellingPrice = raw.selling_price !== undefined ? raw.selling_price : raw.sellingPrice;
+    const lowStockThreshold = raw.low_stock_threshold !== undefined ? raw.low_stock_threshold : raw.lowStockThreshold;
+    const periodId = raw.period_id !== undefined ? raw.period_id : raw.periodId;
+    const isActive = raw.is_active !== undefined ? raw.is_active : raw.isActive;
+
+    let resolvedImageUrls: string[] | undefined;
+    let resolvedImageUrl: string | null | undefined;
+    if (rawImageUrls !== undefined) {
+      resolvedImageUrls = Array.isArray(rawImageUrls) ? rawImageUrls.filter(Boolean).map(String) : [];
+      resolvedImageUrl = resolvedImageUrls.length > 0
+        ? resolvedImageUrls[0]
+        : (imageUrl !== undefined ? (imageUrl ? String(imageUrl).trim() : null) : null);
+    } else if (imageUrl !== undefined) {
+      resolvedImageUrl = imageUrl ? String(imageUrl).trim() : null;
+      resolvedImageUrls = resolvedImageUrl ? [resolvedImageUrl] : [];
+    }
 
     const data: any = {
       default_currency: 'IDR',
       ...(raw.sku !== undefined ? { sku: String(raw.sku).trim() } : {}),
       ...(raw.name !== undefined ? { name: String(raw.name).trim() } : {}),
       ...(raw.category !== undefined ? { category: raw.category ? String(raw.category).trim() : null } : {}),
-      ...(raw.brand_name !== undefined ? { brand_name: raw.brand_name ? String(raw.brand_name).trim() : null } : {}),
-      ...(raw.store_location !== undefined ? { store_location: raw.store_location ? String(raw.store_location).trim() : null } : {}),
-      ...(raw.product_url !== undefined ? { product_url: raw.product_url ? String(raw.product_url).trim() : null } : {}),
-      ...(raw.image_url !== undefined ? { image_url: raw.image_url ? String(raw.image_url).trim() : null } : {}),
-      ...(raw.stock_mode !== undefined ? { stock_mode: raw.stock_mode } : {}),
-      ...(raw.buy_price !== undefined ? { buy_price: Number(raw.buy_price || 0) } : {}),
-      ...(raw.selling_price !== undefined ? { selling_price: Number(raw.selling_price || 0) } : {}),
-      ...(raw.low_stock_threshold !== undefined ? { low_stock_threshold: Number(raw.low_stock_threshold || 0) } : {}),
+      ...(brandName !== undefined ? { brand_name: brandName ? String(brandName).trim() : null } : {}),
+      ...(variant !== undefined ? { variant: variant ? String(variant).trim() : null } : {}),
+      ...(size !== undefined ? { size: size ? String(size).trim() : null } : {}),
+      ...(storeLocation !== undefined ? { store_location: storeLocation ? String(storeLocation).trim() : null } : {}),
+      ...(productUrl !== undefined ? { product_url: productUrl ? String(productUrl).trim() : null } : {}),
+      ...(resolvedImageUrl !== undefined ? { image_url: resolvedImageUrl } : {}),
+      ...(resolvedImageUrls !== undefined ? { image_urls: resolvedImageUrls } : {}),
+      ...(stockMode !== undefined ? { stock_mode: stockMode } : {}),
+      ...(buyPrice !== undefined ? { buy_price: Number(buyPrice || 0) } : {}),
+      ...(sellingPrice !== undefined ? { selling_price: Number(sellingPrice || 0) } : {}),
+      ...(lowStockThreshold !== undefined ? { low_stock_threshold: Number(lowStockThreshold || 0) } : {}),
       ...(raw.notes !== undefined ? { notes: raw.notes ? String(raw.notes).trim() : null } : {}),
-      ...(raw.period_id !== undefined ? { period_id: raw.period_id ? Number(raw.period_id) : null } : {}),
-      ...(raw.is_active !== undefined ? { is_active: Boolean(raw.is_active) } : {}),
+      ...(periodId !== undefined ? { period_id: periodId ? Number(periodId) : null } : {}),
+      ...(isActive !== undefined ? { is_active: Boolean(isActive) } : {}),
     };
 
     return this.prisma.$transaction(async tx => {

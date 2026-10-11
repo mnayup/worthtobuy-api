@@ -7,6 +7,96 @@ import {
   validateShipmentTransition,
 } from './helpers/shipment-sync.helper';
 
+function cleanShipmentData(body: any): any {
+  if (!body || typeof body !== 'object') return {};
+  const cleaned: any = {};
+
+  if (body.tracking_number !== undefined || body.trackingNumber !== undefined) {
+    const val = body.tracking_number !== undefined ? body.tracking_number : body.trackingNumber;
+    cleaned.tracking_number = val ? String(val).trim() : null;
+  }
+  if (body.order_id !== undefined || body.orderId !== undefined) {
+    const val = body.order_id !== undefined ? body.order_id : body.orderId;
+    if (val !== null && val !== undefined) cleaned.order_id = Number(val);
+  }
+  if (body.customer_id !== undefined || body.customerId !== undefined) {
+    const val = body.customer_id !== undefined ? body.customer_id : body.customerId;
+    if (val !== null && val !== undefined) cleaned.customer_id = Number(val);
+  }
+  if (body.address !== undefined) {
+    cleaned.address = String(body.address || '').trim();
+  }
+  if (body.courier !== undefined) {
+    cleaned.courier = String(body.courier || '').trim();
+  }
+  if (body.service_type !== undefined || body.serviceType !== undefined) {
+    const val = body.service_type !== undefined ? body.service_type : body.serviceType;
+    cleaned.service_type = val ? String(val).trim() : null;
+  }
+  if (
+    body.weight_kg !== undefined ||
+    body.weightKg !== undefined ||
+    body.actual_weight_kg !== undefined ||
+    body.actualWeightKg !== undefined
+  ) {
+    const val =
+      body.weight_kg !== undefined
+        ? body.weight_kg
+        : body.weightKg !== undefined
+        ? body.weightKg
+        : body.actual_weight_kg !== undefined
+        ? body.actual_weight_kg
+        : body.actualWeightKg;
+    cleaned.weight_kg = val !== null && val !== undefined && val !== '' ? Number(val) : null;
+  }
+  if (
+    body.shipping_cost !== undefined ||
+    body.shippingCost !== undefined ||
+    body.customer_shipping !== undefined ||
+    body.customerShipping !== undefined
+  ) {
+    const val =
+      body.shipping_cost !== undefined
+        ? body.shipping_cost
+        : body.shippingCost !== undefined
+        ? body.shippingCost
+        : body.customer_shipping !== undefined
+        ? body.customer_shipping
+        : body.customerShipping;
+    cleaned.shipping_cost = val !== null && val !== undefined && val !== '' ? Number(val) : 0;
+  }
+  if (body.shipped_at !== undefined || body.shippedAt !== undefined) {
+    const val = body.shipped_at !== undefined ? body.shipped_at : body.shippedAt;
+    cleaned.shipped_at = val ? new Date(val) : null;
+  }
+  if (body.status !== undefined) {
+    let s = body.status;
+    if (s === 'COMPLETED') s = 'DELIVERED';
+    cleaned.status = s;
+  }
+  if (
+    body.proof_url !== undefined ||
+    body.proofUrl !== undefined ||
+    body.photo_url !== undefined ||
+    body.photoUrl !== undefined
+  ) {
+    const val =
+      body.proof_url !== undefined
+        ? body.proof_url
+        : body.proofUrl !== undefined
+        ? body.proofUrl
+        : body.photo_url !== undefined
+        ? body.photo_url
+        : body.photoUrl;
+    cleaned.proof_url = val ? String(val).trim() : null;
+  }
+  if (body.notes !== undefined) {
+    cleaned.notes = body.notes ? String(body.notes).trim() : null;
+  }
+
+  return cleaned;
+}
+
 @Injectable()
 export class ShipmentsService {
   constructor(
@@ -133,19 +223,19 @@ export class ShipmentsService {
   }
 
   async create(body: any, user_id?: number) {
-    let status = body.status || 'WAITING_PACKING';
-    if (status === 'COMPLETED') status = 'DELIVERED';
-    body.status = status;
+    const cleaned = cleanShipmentData(body);
+    const status = cleaned.status || 'WAITING_PACKING';
+    cleaned.status = status;
 
-    if (body.order_id) {
+    if (cleaned.order_id) {
       const order = await this.prisma.order.findUnique({
-        where: { id: body.order_id },
+        where: { id: cleaned.order_id },
         include: { invoice_links: { include: { invoice: true } } },
       });
-      validateShipmentPaymentPreconditions(order, status, body.tracking_number);
+      validateShipmentPaymentPreconditions(order, status, cleaned.tracking_number);
     }
 
-    const data = await this.prisma.shipment.create({ data: body });
+    const data = await this.prisma.shipment.create({ data: cleaned });
     await this.syncItems(data.order_id, data.status, user_id);
     return data;
   }
@@ -162,19 +252,20 @@ export class ShipmentsService {
       },
     });
 
-    let targetStatus = body.status !== undefined ? body.status : current.status;
+    const cleaned = cleanShipmentData(body);
+    let targetStatus = cleaned.status !== undefined ? cleaned.status : current.status;
     if (targetStatus === 'COMPLETED') {
       targetStatus = 'DELIVERED';
-      body.status = 'DELIVERED';
+      cleaned.status = 'DELIVERED';
     }
 
     const isPackingAttempt =
-      (body.status === 'PACKED' || targetStatus === 'PACKED' || targetStatus === 'READY') &&
+      (cleaned.status === 'PACKED' || targetStatus === 'PACKED' || targetStatus === 'READY') &&
       current.status === 'WAITING_PACKING';
     const isSetResiAttempt =
-      (body.tracking_number !== undefined &&
-        String(body.tracking_number).trim() !== '' &&
-        body.tracking_number !== current.tracking_number) ||
+      (cleaned.tracking_number !== undefined &&
+        String(cleaned.tracking_number).trim() !== '' &&
+        cleaned.tracking_number !== current.tracking_number) ||
       (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) &&
         !['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(current.status));
 
@@ -189,10 +280,10 @@ export class ShipmentsService {
       }
     }
 
-    validateShipmentTransition(targetStatus, current, body);
+    validateShipmentTransition(targetStatus, current, cleaned);
 
-    const data = await this.prisma.shipment.update({ where: { id }, data: body });
-    if (body.status) await this.syncItems(data.order_id, body.status, user_id);
+    const data = await this.prisma.shipment.update({ where: { id }, data: cleaned });
+    if (cleaned.status) await this.syncItems(data.order_id, cleaned.status, user_id);
     return data;
   }
 

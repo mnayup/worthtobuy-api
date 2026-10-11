@@ -254,9 +254,12 @@ model product {
   name                String
   category            String?
   brand_name          String?
+  variant             String?
+  size                String?
   store_location      String?
   product_url         String?
   image_url           String?
+  image_urls          String[]             @default([])
   default_currency    String               @default("IDR")
   stock_mode          ProductMode          @default(EVENT)
   stock_quantity      Int                  @default(0)

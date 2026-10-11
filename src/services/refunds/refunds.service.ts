@@ -4,6 +4,52 @@ import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { CustomersService } from '../customers/customers.service';
 import { sequence } from '../../common/utils/http.utils';
 
+function cleanRefundData(body: any): any {
+  if (!body || typeof body !== 'object') return {};
+  const cleaned: any = {};
+
+  if (body.refund_number !== undefined || body.refundNumber !== undefined) {
+    const val = body.refund_number !== undefined ? body.refund_number : body.refundNumber;
+    cleaned.refund_number = val ? String(val).trim() : undefined;
+  }
+  if (body.order_id !== undefined || body.orderId !== undefined) {
+    const val = body.order_id !== undefined ? body.order_id : body.orderId;
+    cleaned.order_id = val ? Number(val) : null;
+  }
+  if (body.invoice_id !== undefined || body.invoiceId !== undefined) {
+    const val = body.invoice_id !== undefined ? body.invoice_id : body.invoiceId;
+    cleaned.invoice_id = val ? Number(val) : null;
+  }
+  if (body.customer_id !== undefined || body.customerId !== undefined) {
+    const val = body.customer_id !== undefined ? body.customer_id : body.customerId;
+    cleaned.customer_id = val ? Number(val) : null;
+  }
+  if (body.refund_type !== undefined || body.refundType !== undefined) {
+    cleaned.refund_type = body.refund_type !== undefined ? body.refund_type : body.refundType;
+  }
+  if (body.amount !== undefined) {
+    cleaned.amount = Number(body.amount);
+  }
+  if (body.reason !== undefined) {
+    cleaned.reason = String(body.reason || '').trim();
+  }
+  if (body.status !== undefined) {
+    cleaned.status = body.status;
+  }
+  if (body.source !== undefined) {
+    cleaned.source = body.source;
+  }
+  if (body.refunded_at !== undefined || body.refundedAt !== undefined) {
+    const val = body.refunded_at !== undefined ? body.refunded_at : body.refundedAt;
+    cleaned.refunded_at = val ? new Date(val) : null;
+  }
+  if (body.notes !== undefined) {
+    cleaned.notes = body.notes ? String(body.notes).trim() : null;
+  }
+
+  return cleaned;
+}
+
 @Injectable()
 export class RefundsService {
   constructor(
@@ -69,14 +115,15 @@ export class RefundsService {
   }
 
   async create(body: any) {
-    if (!body.order_id && !body.invoice_id && !body.customer_id) {
+    const cleaned = cleanRefundData(body);
+    const resolvedOrderId = cleaned.order_id ?? null;
+    const resolvedInvoiceId = cleaned.invoice_id ?? null;
+    let customer_id = cleaned.customer_id ?? null;
+
+    if (!resolvedOrderId && !resolvedInvoiceId && !customer_id) {
       throw new BadRequestException('Pilih minimal satu target: pelanggan, invoice, atau pesanan.');
     }
 
-    const resolvedOrderId = body.order_id ? Number(body.order_id) : null;
-    const resolvedInvoiceId = body.invoice_id ? Number(body.invoice_id) : null;
-
-    let customer_id = body.customer_id ? Number(body.customer_id) : null;
     if (!customer_id && resolvedOrderId) {
       const order = await this.prisma.order.findUnique({ where: { id: resolvedOrderId }, select: { customer_id: true } });
       customer_id = order?.customer_id || null;
@@ -85,16 +132,16 @@ export class RefundsService {
       customer_id = invoice?.customer_id || null;
     }
 
-    const refund_type = body.refund_type || 'CUSTOMER_DEPOSIT';
+    const refund_type = cleaned.refund_type || 'CUSTOMER_DEPOSIT';
 
     const data = await this.prisma.refund.create({
       data: {
-        ...body,
+        ...cleaned,
         order_id: resolvedOrderId,
         invoice_id: resolvedInvoiceId,
         customer_id,
         refund_type,
-        refund_number: body.refund_number || sequence('REF'),
+        refund_number: cleaned.refund_number || sequence('REF'),
         auto_generated: false,
       },
       include: { customer: true, invoice: { include: { customer: true } }, order: { include: { customer: true } } },
@@ -117,11 +164,12 @@ export class RefundsService {
       where: { id },
       include: { order: true, invoice: true },
     });
-    const resolvedOrderId = body.order_id === undefined ? current.order_id : body.order_id || null;
-    const resolvedInvoiceId = body.invoice_id === undefined ? current.invoice_id : body.invoice_id || null;
+    const cleaned = cleanRefundData(body);
+    const resolvedOrderId = cleaned.order_id === undefined ? current.order_id : cleaned.order_id || null;
+    const resolvedInvoiceId = cleaned.invoice_id === undefined ? current.invoice_id : cleaned.invoice_id || null;
     
     let customer_id = current.customer_id || current.order?.customer_id || current.invoice?.customer_id || null;
-    if (body.customer_id) customer_id = Number(body.customer_id);
+    if (cleaned.customer_id) customer_id = Number(cleaned.customer_id);
 
     if (!resolvedOrderId && !resolvedInvoiceId && !customer_id) {
       throw new BadRequestException('Pilih minimal satu target refund: pelanggan, invoice, atau pesanan.');
@@ -134,7 +182,7 @@ export class RefundsService {
       customer_id &&
       current.status === 'PAID' &&
       current.refund_type === 'CUSTOMER_DEPOSIT' &&
-      (body.status === 'REJECTED' || (body.refund_type && body.refund_type !== 'CUSTOMER_DEPOSIT'))
+      (cleaned.status === 'REJECTED' || (cleaned.refund_type && cleaned.refund_type !== 'CUSTOMER_DEPOSIT'))
     ) {
       const balance = await this.customersService.getDepositBalance(customer_id);
       if (balance.availableDeposit < Number(current.amount)) {
@@ -144,22 +192,22 @@ export class RefundsService {
       }
     }
 
-    const paidAutoOverpayment = body.status === 'PAID' && current.auto_generated && current.source === 'OVERPAYMENT';
+    const paidAutoOverpayment = cleaned.status === 'PAID' && current.auto_generated && current.source === 'OVERPAYMENT';
     const data = await this.prisma.refund.update({
       where: { id },
       data: {
-        ...body,
-        order_id: body.order_id === undefined ? undefined : body.order_id || null,
-        invoice_id: body.invoice_id === undefined ? undefined : body.invoice_id || null,
+        ...cleaned,
+        order_id: cleaned.order_id === undefined ? undefined : cleaned.order_id || null,
+        invoice_id: cleaned.invoice_id === undefined ? undefined : cleaned.invoice_id || null,
         customer_id: customer_id || undefined,
-        refund_type: body.refund_type !== undefined ? body.refund_type : undefined,
-        refunded_at: body.status === 'PAID' && !body.refunded_at ? new Date() : body.refunded_at,
+        refund_type: cleaned.refund_type !== undefined ? cleaned.refund_type : undefined,
+        refunded_at: cleaned.status === 'PAID' && !cleaned.refunded_at ? new Date() : cleaned.refunded_at,
         ...(paidAutoOverpayment ? { source_key: null } : {}),
       },
       include: { customer: true, invoice: { include: { customer: true } }, order: { include: { customer: true } } },
     });
 
-    if (body.status === 'PAID' && data.order_id) {
+    if (cleaned.status === 'PAID' && data.order_id) {
       await this.prisma.order.update({ where: { id: data.order_id }, data: { status: 'REFUND' } });
     }
     if (current.invoice_id && current.invoice_id !== data.invoice_id) {

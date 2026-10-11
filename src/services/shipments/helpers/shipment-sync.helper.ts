@@ -4,22 +4,24 @@ export function isOrderFullyPaid(order: any): boolean {
   if (!order) return false;
 
   // 1. If invoice links exist, all invoices must be PAID or OVERPAID with 0 outstanding
-  if (order.invoiceLinks && order.invoiceLinks.length > 0) {
-    const hasUnpaidInvoice = order.invoiceLinks.some((link: any) => {
+  const invoiceLinks = order.invoice_links || order.invoiceLinks;
+  if (invoiceLinks && invoiceLinks.length > 0) {
+    const hasUnpaidInvoice = invoiceLinks.some((link: any) => {
       const inv = link.invoice;
       if (!inv) return false;
-      return !['PAID', 'OVERPAID'].includes(inv.status) || Number(inv.outstandingAmount || 0) > 0;
+      const outstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
+      return !['PAID', 'OVERPAID'].includes(inv.status) || outstanding > 0;
     });
     if (hasUnpaidInvoice) return false;
   }
 
   // 2. Outstanding amount check
-  const outstanding = Number(order.outstandingAmount || 0);
+  const outstanding = Number(order.outstanding_amount ?? order.outstandingAmount ?? 0);
   if (outstanding > 0) return false;
 
   // 3. Paid amount vs total bill check
-  const totalBill = Number(order.totalBill || 0);
-  const paidAmount = Number(order.paidAmount || 0);
+  const totalBill = Number(order.total_bill ?? order.totalBill ?? 0);
+  const paidAmount = Number(order.paid_amount ?? order.paidAmount ?? 0);
   if (totalBill > 0 && paidAmount < totalBill) return false;
 
   // 4. Status check: order must not be in pending payment status
@@ -43,20 +45,22 @@ export function validateShipmentPaymentPreconditions(order: any, status: string,
 
 export function validateShipmentTransition(targetStatus: string, current: any, body: any) {
   if (['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(targetStatus)) {
-    const tracking = body.trackingNumber !== undefined ? body.trackingNumber : current.trackingNumber;
+    const tracking = body.tracking_number ?? body.trackingNumber ?? current.tracking_number ?? current.trackingNumber;
     if (!tracking || !String(tracking).trim()) {
       throw new BadRequestException('Nomor resi wajib diisi sebelum mengubah status pengiriman menjadi Sedang Dikirim / Selesai.');
     }
-    const courier = body.courier !== undefined ? body.courier : current.courier;
+    const courier = body.courier ?? current.courier;
     if (!courier || !String(courier).trim()) {
       throw new BadRequestException('Kurir pengiriman wajib diisi sebelum memproses pengiriman.');
     }
-    const address = body.address !== undefined ? body.address : current.address;
+    const address = body.address ?? current.address;
     if (!address || !String(address).trim() || address === '-') {
       throw new BadRequestException('Alamat pengiriman belum lengkap. Mohon perbarui alamat sebelum memproses pengiriman.');
     }
-    if (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) && !body.shippedAt && !current.shippedAt) {
-      body.shippedAt = new Date();
+    const shippedAt = body.shipped_at ?? body.shippedAt ?? current.shipped_at ?? current.shippedAt;
+    if (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) && !shippedAt) {
+      body.shipped_at = new Date();
     }
   }
 }
+

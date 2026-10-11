@@ -3,6 +3,79 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 import { RefundService } from '../shared/refund.service';
 import { sequence } from '../../common/utils/http.utils';
 
+function cleanPurchaseData(body: any): any {
+  if (!body || typeof body !== 'object') return {};
+  const cleaned: any = {};
+
+  if (body.purchase_number !== undefined || body.purchaseNumber !== undefined) {
+    const val = body.purchase_number !== undefined ? body.purchase_number : body.purchaseNumber;
+    cleaned.purchase_number = val ? String(val).trim() : undefined;
+  }
+  if (body.purchase_date !== undefined || body.purchaseDate !== undefined) {
+    const val = body.purchase_date !== undefined ? body.purchase_date : body.purchaseDate;
+    cleaned.purchase_date = val ? new Date(val) : new Date();
+  }
+  if (body.order_item_id !== undefined || body.orderItemId !== undefined) {
+    const val = body.order_item_id !== undefined ? body.order_item_id : body.orderItemId;
+    if (val !== null && val !== undefined) cleaned.order_item_id = Number(val);
+  }
+  if (body.shopper_id !== undefined || body.shopperId !== undefined) {
+    const val = body.shopper_id !== undefined ? body.shopper_id : body.shopperId;
+    cleaned.shopper_id = val ? Number(val) : null;
+  }
+  if (body.period_id !== undefined || body.periodId !== undefined) {
+    const val = body.period_id !== undefined ? body.period_id : body.periodId;
+    if (val !== null && val !== undefined) cleaned.period_id = Number(val);
+  }
+  if (body.product_id !== undefined || body.productId !== undefined) {
+    const val = body.product_id !== undefined ? body.product_id : body.productId;
+    cleaned.product_id = val ? Number(val) : null;
+  }
+  if (body.brand_name !== undefined || body.brandName !== undefined) {
+    const val = body.brand_name !== undefined ? body.brand_name : body.brandName;
+    cleaned.brand_name = val ? String(val).trim() : '-';
+  }
+  if (body.quantity !== undefined) {
+    cleaned.quantity = Number(body.quantity || 1);
+  }
+  if (body.estimated_price !== undefined || body.estimatedPrice !== undefined) {
+    const val = body.estimated_price !== undefined ? body.estimated_price : body.estimatedPrice;
+    cleaned.estimated_price = Number(val || 0);
+  }
+  if (body.actual_price !== undefined || body.actualPrice !== undefined) {
+    const val = body.actual_price !== undefined ? body.actual_price : body.actualPrice;
+    cleaned.actual_price = Number(val || 0);
+  }
+  if (body.status !== undefined) {
+    cleaned.status = body.status;
+  }
+  if (body.payment_method !== undefined || body.paymentMethod !== undefined) {
+    const val = body.payment_method !== undefined ? body.payment_method : body.paymentMethod;
+    cleaned.payment_method = val ? String(val).trim() : null;
+  }
+  if (
+    body.receipt_url !== undefined ||
+    body.receiptUrl !== undefined ||
+    body.receipt_photo_url !== undefined ||
+    body.receiptPhotoUrl !== undefined
+  ) {
+    const val =
+      body.receipt_url !== undefined
+        ? body.receipt_url
+        : body.receiptUrl !== undefined
+        ? body.receiptUrl
+        : body.receipt_photo_url !== undefined
+        ? body.receipt_photo_url
+        : body.receiptPhotoUrl;
+    cleaned.receipt_url = val ? String(val).trim() : null;
+  }
+  if (body.notes !== undefined) {
+    cleaned.notes = body.notes ? String(body.notes).trim() : null;
+  }
+
+  return cleaned;
+}
+
 @Injectable()
 export class PurchasesService {
   constructor(
@@ -60,7 +133,6 @@ export class PurchasesService {
     return { data, total, page, limit };
   }
 
-  
   async getSummary() {
     const purchases = await this.prisma.purchase.findMany({
       select: { status: true },
@@ -83,21 +155,27 @@ export class PurchasesService {
   }
 
   async create(body: any, user_id?: number) {
+    const order_item_id = body.order_item_id ? Number(body.order_item_id) : body.orderItemId ? Number(body.orderItemId) : null;
     const item = await this.prisma.order_item.findUniqueOrThrow({
-      where: { id: body.order_item_id },
+      where: { id: order_item_id! },
       include: { order: { include: { customer: true } } },
     });
-    const status = body.status || "WAITING_PURCHASE";
-    const estimated = Number(body.estimated_price ?? 0);
-    const actual = Number(body.actual_price ?? estimated);
+    const cleaned = cleanPurchaseData(body);
+    const status = cleaned.status || "WAITING_PURCHASE";
+    const estimated = Number(cleaned.estimated_price ?? item.target_price_idr ?? item.unit_price_foreign ?? 0);
+    const actual = Number(cleaned.actual_price ?? estimated);
 
     const data = await this.prisma.purchase.create({
       data: {
-        ...body,
+        ...cleaned,
+        order_item_id: item.id,
+        period_id: cleaned.period_id || item.order.period_id,
+        brand_name: cleaned.brand_name || item.brand_name || '-',
+        quantity: cleaned.quantity || item.quantity || 1,
         status,
-        product_id: body.product_id || item.product_id || null,
-        purchase_number: body.purchase_number || sequence("PUR"),
-        shopper_id: body.shopper_id || user_id,
+        product_id: cleaned.product_id !== undefined ? cleaned.product_id : item.product_id || null,
+        purchase_number: cleaned.purchase_number || sequence("PUR"),
+        shopper_id: cleaned.shopper_id || user_id,
         estimated_price: estimated,
         actual_price: actual,
         price_difference: actual - estimated,
@@ -135,15 +213,18 @@ export class PurchasesService {
       },
     });
 
-    const estimated = Number(body.estimated_price ?? current.estimated_price);
-    const actual = Number(body.actual_price ?? current.actual_price);
+    const cleaned = cleanPurchaseData(body);
+    const estimated = Number(cleaned.estimated_price ?? current.estimated_price);
+    const actual = Number(cleaned.actual_price ?? current.actual_price);
     const price_difference = actual - estimated;
 
     const data = await this.prisma.purchase.update({
       where: { id: current.id },
       data: {
-        ...body,
-        product_id: body.product_id === undefined ? undefined : body.product_id || null,
+        ...cleaned,
+        product_id: cleaned.product_id === undefined ? undefined : cleaned.product_id || null,
+        estimated_price: estimated,
+        actual_price: actual,
         price_difference,
         currency_code: "IDR",
         exchange_rate: 1,
