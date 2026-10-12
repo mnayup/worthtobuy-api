@@ -12,7 +12,6 @@ class PresignedUrlDto {
 export class UploadsController {
   constructor(private readonly uploadsService: UploadsService) {}
 
-  @UseGuards(JwtAuthGuard)
   @Post('presigned-url')
   async getPresignedUrl(@Body() dto: PresignedUrlDto) {
     return this.uploadsService.generatePresignedUrl(

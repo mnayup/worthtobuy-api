@@ -32,22 +32,70 @@ export function isOrderFullyPaid(order: any): boolean {
   return true;
 }
 
-export function validateShipmentPaymentPreconditions(order: any, status: string, trackingNumber?: string) {
+export function validateShipmentPaymentPreconditions(
+  order: any,
+  status: string,
+  trackingNumber?: string
+) {
   if (order && !isOrderFullyPaid(order)) {
     if (['PACKED', 'READY'].includes(status)) {
-      throw new BadRequestException('Pesanan belum lunas (Full Payment). Proses packing tidak dapat dilakukan sebelum pembayaran lunas.');
+      throw new BadRequestException(
+        'Pesanan belum lunas (Full Payment). ' +
+          'Proses packing tidak dapat dilakukan sebelum pembayaran lunas.'
+      );
     }
     if (trackingNumber || ['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(status)) {
-      throw new BadRequestException('Pesanan belum lunas (Full Payment). Nomor resi dan pengiriman tidak dapat diproses sebelum pembayaran lunas.');
+      throw new BadRequestException(
+        'Pesanan belum lunas (Full Payment). ' +
+          'Nomor resi dan pengiriman tidak dapat diproses sebelum pembayaran lunas.'
+      );
     }
   }
 }
 
 export function validateShipmentTransition(targetStatus: string, current: any, body: any) {
+  const isResiProvided =
+    (body.tracking_number !== undefined &&
+      body.tracking_number !== null &&
+      String(body.tracking_number).trim() !== '') ||
+    (body.trackingNumber !== undefined &&
+      body.trackingNumber !== null &&
+      String(body.trackingNumber).trim() !== '');
+
+  if (current.status === 'WAITING_PACKING') {
+    if (isResiProvided) {
+      throw new BadRequestException(
+        'Nomor resi tidak dapat diinput sebelum pesanan selesai dipacking ' +
+          '(Status harus PACKED terlebih dahulu).'
+      );
+    }
+    if (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus)) {
+      throw new BadRequestException(
+        'Pesanan harus melalui proses packing terlebih dahulu sebelum dikirim.'
+      );
+    }
+  }
+
+  if (targetStatus === 'PACKED') {
+    const address = body.address ?? current.address;
+    if (!address || !String(address).trim() || address === '-') {
+      throw new BadRequestException(
+        'Alamat pengiriman wajib diisi lengkap sebelum memproses packing.'
+      );
+    }
+  }
+
   if (['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(targetStatus)) {
-    const tracking = body.tracking_number ?? body.trackingNumber ?? current.tracking_number ?? current.trackingNumber;
+    const tracking =
+      body.tracking_number ??
+      body.trackingNumber ??
+      current.tracking_number ??
+      current.trackingNumber;
     if (!tracking || !String(tracking).trim()) {
-      throw new BadRequestException('Nomor resi wajib diisi sebelum mengubah status pengiriman menjadi Sedang Dikirim / Selesai.');
+      throw new BadRequestException(
+        'Nomor resi wajib diisi sebelum mengubah status pengiriman menjadi ' +
+          'Sedang Dikirim / Selesai.'
+      );
     }
     const courier = body.courier ?? current.courier;
     if (!courier || !String(courier).trim()) {
@@ -55,12 +103,14 @@ export function validateShipmentTransition(targetStatus: string, current: any, b
     }
     const address = body.address ?? current.address;
     if (!address || !String(address).trim() || address === '-') {
-      throw new BadRequestException('Alamat pengiriman belum lengkap. Mohon perbarui alamat sebelum memproses pengiriman.');
+      throw new BadRequestException(
+        'Alamat pengiriman belum lengkap. Mohon perbarui alamat sebelum memproses pengiriman.'
+      );
     }
-    const shippedAt = body.shipped_at ?? body.shippedAt ?? current.shipped_at ?? current.shippedAt;
+    const shippedAt =
+      body.shipped_at ?? body.shippedAt ?? current.shipped_at ?? current.shippedAt;
     if (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) && !shippedAt) {
       body.shipped_at = new Date();
     }
   }
 }
-

@@ -25,6 +25,11 @@ export class PurchasesController {
     return this.purchasesService.findAll(query);
   }
 
+  @Get(":id")
+  async findOne(@Param("id") id: string) {
+    return this.purchasesService.findOne(Number(id));
+  }
+
   @Post()
   @Roles("OWNER", "ADMIN", "SHOPPER")
   async create(@Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {

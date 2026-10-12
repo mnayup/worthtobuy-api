@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
 import { PublicService } from './public.service';
 
 @Controller('api/public')
@@ -33,5 +33,18 @@ export class PublicController {
   @Get('track/:identifier')
   async trackOrder(@Param('identifier') identifier: string) {
     return this.publicService.trackOrder(identifier);
+  }
+
+  @Get('invoices/:invoiceNumber')
+  async getInvoiceDetail(@Param('invoiceNumber') invoiceNumber: string) {
+    return this.publicService.getPublicInvoice(invoiceNumber);
+  }
+
+  @Post('invoices/:invoiceNumber/payments')
+  async submitPaymentProof(
+    @Param('invoiceNumber') invoiceNumber: string,
+    @Body() body: any
+  ) {
+    return this.publicService.submitPublicPaymentProof(invoiceNumber, body);
   }
 }

@@ -68,7 +68,12 @@ export class PeriodsService implements OnModuleInit {
     };
 
     const [data, total] = await Promise.all([
-      this.prisma.jastip_period.findMany({ where, skip, take: limit, orderBy: { departure_at: 'desc' } }),
+      this.prisma.jastip_period.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { departure_at: 'desc' },
+      }),
       this.prisma.jastip_period.count({ where }),
     ]);
 
@@ -79,16 +84,18 @@ export class PeriodsService implements OnModuleInit {
     return this.prisma.jastip_period.findFirstOrThrow({ where: { id, deleted_at: null } });
   }
 
-  private cleanPeriodData(body: any, userId?: number) {
+  private cleanPeriodData(body: any) {
     const order_open_at = body.order_open_at ?? body.orderOpenAt;
     const order_close_at = body.order_close_at ?? body.orderCloseAt;
     const departure_at = body.departure_at ?? body.departureAt;
     const return_at = body.return_at ?? body.returnAt;
-    const estimated_shipping_at = body.estimated_shipping_at ?? body.estimatedShippingAt;
-    const target_revenue = body.target_revenue ?? body.targetRevenue;
-    const budget_limit = body.budget_limit ?? body.budgetLimit;
-    const banner_url = body.banner_url ?? body.bannerUrl;
-    const is_shopping_live = body.is_shopping_live ?? body.isShoppingLive;
+    const estimated_shipping_at =
+      body.estimated_shipping_at ?? body.estimatedShippingAt;
+    const currency_code = body.currency_code ?? body.currencyCode;
+    const exchange_rate = body.exchange_rate ?? body.exchangeRate;
+    const max_items = body.max_items ?? body.maxItems;
+    const baggage_capacity_kg =
+      body.baggage_capacity_kg ?? body.baggageCapacityKg;
 
     const data: any = {
       country: body.country || 'Indonesia',
@@ -96,27 +103,51 @@ export class PeriodsService implements OnModuleInit {
 
     if (body.code !== undefined) data.code = String(body.code).trim();
     if (body.name !== undefined) data.name = String(body.name).trim();
-    if (body.description !== undefined) data.description = body.description ? String(body.description).trim() : null;
-    if (body.city !== undefined) data.city = body.city ? String(body.city).trim() : null;
+    if (body.city !== undefined) {
+      data.city = body.city ? String(body.city).trim() : null;
+    }
     if (body.type !== undefined) data.type = body.type;
     if (body.status !== undefined) data.status = body.status;
-    if (order_open_at !== undefined) data.order_open_at = order_open_at ? new Date(order_open_at) : null;
-    if (order_close_at !== undefined) data.order_close_at = order_close_at ? new Date(order_close_at) : null;
-    if (departure_at !== undefined) data.departure_at = departure_at ? new Date(departure_at) : null;
-    if (return_at !== undefined) data.return_at = return_at ? new Date(return_at) : null;
-    if (estimated_shipping_at !== undefined) data.estimated_shipping_at = estimated_shipping_at ? new Date(estimated_shipping_at) : null;
-    if (target_revenue !== undefined) data.target_revenue = target_revenue ? Number(target_revenue) : null;
-    if (budget_limit !== undefined) data.budget_limit = budget_limit ? Number(budget_limit) : null;
-    if (body.notes !== undefined) data.notes = body.notes ? String(body.notes).trim() : null;
-    if (banner_url !== undefined) data.banner_url = banner_url ? String(banner_url).trim() : null;
-    if (is_shopping_live !== undefined) data.is_shopping_live = Boolean(is_shopping_live);
-    if (userId) data.created_by_id = userId;
+    if (order_open_at !== undefined) {
+      data.order_open_at = order_open_at ? new Date(order_open_at) : null;
+    }
+    if (order_close_at !== undefined) {
+      data.order_close_at = order_close_at ? new Date(order_close_at) : null;
+    }
+    if (departure_at !== undefined) {
+      data.departure_at = departure_at ? new Date(departure_at) : null;
+    }
+    if (return_at !== undefined) {
+      data.return_at = return_at ? new Date(return_at) : null;
+    }
+    if (estimated_shipping_at !== undefined) {
+      data.estimated_shipping_at = estimated_shipping_at
+        ? new Date(estimated_shipping_at)
+        : null;
+    }
+    if (currency_code !== undefined) {
+      data.currency_code = String(currency_code).trim().toUpperCase();
+    }
+    if (exchange_rate !== undefined) {
+      data.exchange_rate = Number(exchange_rate) || 1;
+    }
+    if (max_items !== undefined) {
+      data.max_items = max_items ? Number(max_items) : null;
+    }
+    if (baggage_capacity_kg !== undefined) {
+      data.baggage_capacity_kg = baggage_capacity_kg
+        ? Number(baggage_capacity_kg)
+        : null;
+    }
+    if (body.notes !== undefined) {
+      data.notes = body.notes ? String(body.notes).trim() : null;
+    }
 
     return data;
   }
 
-  async create(body: any, user_id?: number) {
-    const data = this.cleanPeriodData(body, user_id);
+  async create(body: any, _user_id?: number) {
+    const data = this.cleanPeriodData(body);
 
     if (data.order_open_at && data.order_close_at) {
       if (data.order_close_at <= data.order_open_at) {
@@ -138,7 +169,9 @@ export class PeriodsService implements OnModuleInit {
     
     if (data.estimated_shipping_at && data.return_at) {
       if (data.estimated_shipping_at < data.return_at) {
-        throw new BadRequestException('Estimated shipping time cannot be before the event period end.');
+        throw new BadRequestException(
+          'Estimated shipping time cannot be before the event period end.',
+        );
       }
     }
 
@@ -151,7 +184,9 @@ export class PeriodsService implements OnModuleInit {
       const code = body.code;
       const status = body.status;
       if (code && code !== 'READY-STOCK') {
-        throw new BadRequestException('Kode event Ready Stock adalah permanen dan tidak dapat diubah.');
+        throw new BadRequestException(
+          'Kode event Ready Stock adalah permanen dan tidak dapat diubah.',
+        );
       }
       if (status && status !== 'OPEN') {
         throw new BadRequestException('Status event Ready Stock harus selalu OPEN.');
@@ -180,7 +215,9 @@ export class PeriodsService implements OnModuleInit {
     
     if (data.estimated_shipping_at && data.return_at) {
       if (data.estimated_shipping_at < data.return_at) {
-        throw new BadRequestException('Estimated shipping time cannot be before the event period end.');
+        throw new BadRequestException(
+          'Estimated shipping time cannot be before the event period end.',
+        );
       }
     }
 
@@ -193,14 +230,18 @@ export class PeriodsService implements OnModuleInit {
   async remove(id: number, user_id?: number) {
     const period = await this.prisma.jastip_period.findUnique({ where: { id } });
     if (period?.code === 'READY-STOCK') {
-      throw new BadRequestException('Event Ready Stock adalah event sistem permanen dan tidak dapat dihapus.');
+      throw new BadRequestException(
+        'Event Ready Stock adalah event sistem permanen dan tidak dapat dihapus.',
+      );
     }
 
     const productsCount = await this.prisma.product.count({
       where: { period_id: id, deleted_at: null, is_active: true },
     });
     if (productsCount > 0) {
-      throw new ConflictException('Event tidak bisa dihapus karena masih memiliki produk aktif yang terkait.');
+      throw new ConflictException(
+        'Event tidak bisa dihapus karena masih memiliki produk aktif yang terkait.',
+      );
     }
 
     return this.prisma.jastip_period.update({

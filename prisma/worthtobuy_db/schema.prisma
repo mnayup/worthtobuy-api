@@ -72,6 +72,7 @@ enum ShipmentStatus {
   READY
   HANDED_TO_COURIER
   IN_TRANSIT
+  WAITING_SETTLEMENT
   DELIVERED
   FAILED
   RETURNED
@@ -135,6 +136,7 @@ enum InvoiceStatus {
 enum RefundSource {
   MANUAL
   OVERPAYMENT
+  SHIPPING_OVERPAYMENT
   UNAVAILABLE_ITEM
 }
 
@@ -385,7 +387,8 @@ model item_status_history {
 
 model purchase {
   id               Int            @id @default(autoincrement())
-  purchase_number  String         @unique
+  purchase_number  String
+  batch_number     Int            @default(1)
   purchase_date    DateTime       @default(now())
   shopper_id       Int?
   shopper          user?          @relation(fields: [shopper_id], references: [id])
@@ -409,6 +412,7 @@ model purchase {
   created_at       DateTime       @default(now())
   updated_at       DateTime       @updatedAt
 
+  @@index([purchase_number])
   @@index([period_id])
   @@index([order_item_id])
   @@index([shopper_id])
@@ -480,11 +484,15 @@ model shipment {
   courier         String
   service_type    String?
   weight_kg       Decimal?       @db.Decimal(10, 2)
-  shipping_cost   Decimal        @default(0) @db.Decimal(18, 2)
-  shipped_at      DateTime?
-  status          ShipmentStatus @default(WAITING_PACKING)
-  proof_url       String?
-  notes           String?
+  shipping_cost            Decimal        @default(0) @db.Decimal(18, 2)
+  actual_shipping_cost     Decimal?       @db.Decimal(18, 2)
+  shipping_cost_difference Decimal?       @db.Decimal(18, 2)
+  shipped_at               DateTime?
+  packed_at                DateTime?
+  status                   ShipmentStatus @default(WAITING_PACKING)
+  proof_before_url         String?
+  proof_url                String?
+  notes                    String?
   created_at      DateTime       @default(now())
   updated_at      DateTime       @updatedAt
 

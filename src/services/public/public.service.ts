@@ -1,6 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma/prisma.service';
-import { findPublicTargetOrder, buildTrackingTimelineResponse } from './helpers/public-tracking.helper';
+import {
+  findPublicTargetOrder,
+  buildTrackingTimelineResponse,
+} from './helpers/public-tracking.helper';
+import {
+  fetchPublicInvoiceData,
+  createPublicPaymentProof,
+} from './helpers/public-invoice.helper';
+import { PUBLIC_HIGHLIGHTS, PUBLIC_FAQ_ITEMS } from './helpers/public-content.helper';
 
 @Injectable()
 export class PublicService {
@@ -57,58 +65,12 @@ export class PublicService {
         },
       },
       categories,
-      highlights: [
-        {
-          title: '100% Original & Amanah',
-          desc: 'Belanja langsung dari official booth pameran, mall, dan official store terverifikasi.',
-          icon: 'ShieldCheck',
-        },
-        {
-          title: 'Live Shopping & Real-time Update',
-          desc: 'Dokumentasi live hunting di venue via Instagram Story & WhatsApp broadcast.',
-          icon: 'Sparkles',
-        },
-        {
-          title: 'Transparan & Rapi',
-          desc: 'Invoice detail, bukti transaksi foto kasir, dan tracking pesanan transparan.',
-          icon: 'ReceiptText',
-        },
-        {
-          title: 'Packing Ekstra Aman',
-          desc: 'Bubble wrap berlapis tebal, kardus kokoh, dan asuransi pengiriman terjamin.',
-          icon: 'PackageCheck',
-        },
-      ],
+      highlights: PUBLIC_HIGHLIGHTS,
     };
   }
 
   async getFaq() {
-    return [
-      {
-        q: 'Bagaimana cara titip belanja di Worthtobuy?',
-        a: 'Pilih event/pameran yang sedang open jastip, kirimkan foto atau nama produk yang diinginkan via WhatsApp, admin kami akan mengonfirmasi ketersediaan dan rincian estimasi biaya/DP.',
-      },
-      {
-        q: 'Apakah semua barang dijamin 100% original?',
-        a: 'Ya, 100% original. Shopper kami belanja langsung on-site di official booth pameran (seperti BBW, Mothercare, Indocomtech, dsb) atau official store resmi.',
-      },
-      {
-        q: 'Bagaimana skema pembayaran dan pelunasannya?',
-        a: 'Untuk barang titipan (Jastip Event), Anda cukup membayar DP awal. Setelah barang berhasil dibeli oleh shopper, invoice pelunasan akan diterbitkan sebelum barang dikirimkan.',
-      },
-      {
-        q: 'Apa itu Ready Stock?',
-        a: 'Ready stock adalah produk yang sudah kami miliki fisiknya di warehouse dan siap langsung dikirim di hari yang sama tanpa menunggu jadwal event belanja.',
-      },
-      {
-        q: 'Bagaimana jika barang yang saya titip habis / out of stock?',
-        a: 'Jika barang tidak berhasil didapatkan di venue, dana DP Anda akan kami refund 100% tanpa potongan atau bisa dialihkan ke deposit akun belanja Anda.',
-      },
-      {
-        q: 'Bisa melayani pengiriman ke seluruh Indonesia?',
-        a: 'Bisa! Kami bekerja sama dengan ekspedisi tepercaya (JNE, SiCepat, J&T, Paxel, Instant Kurir) untuk menjangkau pengiriman ke seluruh kota di Indonesia.',
-      },
-    ];
+    return PUBLIC_FAQ_ITEMS;
   }
 
   async getEvents(query: any) {
@@ -151,7 +113,7 @@ export class PublicService {
   }
 
   async getEventDetail(id: number) {
-    const event = await this.prisma.jastip_period.findFirstOrThrow({
+    return this.prisma.jastip_period.findFirstOrThrow({
       where: {
         id,
         deleted_at: null,
@@ -164,8 +126,6 @@ export class PublicService {
         },
       },
     });
-
-    return event;
   }
 
   async getProducts(query: any) {
@@ -287,5 +247,13 @@ export class PublicService {
     const clean = identifier.trim();
     const { targetOrder, invoice } = await findPublicTargetOrder(this.prisma, clean);
     return buildTrackingTimelineResponse(targetOrder, invoice);
+  }
+
+  async getPublicInvoice(invoiceNumber: string) {
+    return fetchPublicInvoiceData(this.prisma, invoiceNumber);
+  }
+
+  async submitPublicPaymentProof(invoiceNumber: string, body: any) {
+    return createPublicPaymentProof(this.prisma, invoiceNumber, body);
   }
 }

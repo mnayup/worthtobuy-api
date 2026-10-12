@@ -111,4 +111,69 @@ export class RefundService {
     }
     return refund;
   }
+
+  async ensureShippingRefund(shipment_id: number, order_id: number, amount: number) {
+    const source_key = `SHIPMENT-${shipment_id}-OVERPAYMENT`;
+    const existing = await this.prisma.refund.findUnique({ where: { source_key } });
+    if (amount <= 0) {
+      if (!existing || existing.status === 'PAID' || existing.status === 'REJECTED') {
+        return existing;
+      }
+      if (existing.status === 'REQUESTED') {
+        return this.prisma.refund.delete({ where: { id: existing.id } });
+      }
+      return this.prisma.refund.update({
+        where: { id: existing.id },
+        data: {
+          status: 'REJECTED',
+          notes: 'Dibatalkan otomatis karena tidak ada kelebihan ongkir.',
+        },
+      });
+    }
+    if (existing?.status === 'PAID') {
+      await this.prisma.refund.update({ where: { id: existing.id }, data: { source_key: null } });
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: order_id },
+      include: { invoice_links: true },
+    });
+    const invoice_id = order?.invoice_links?.[0]?.invoice_id || null;
+
+    const refund = await this.prisma.refund.upsert({
+      where: { source_key },
+      update: {
+        amount,
+        reason: 'Kelebihan ongkir pengiriman terdeteksi otomatis.',
+        order_id,
+        invoice_id,
+        customer_id: order?.customer_id || null,
+        source: 'SHIPPING_OVERPAYMENT',
+        auto_generated: true,
+        status: 'REQUESTED',
+        refunded_at: null,
+      },
+      create: {
+        refund_number: sequence('REF-ONGKIR'),
+        order_id,
+        invoice_id,
+        customer_id: order?.customer_id || null,
+        amount,
+        reason: 'Kelebihan ongkir pengiriman terdeteksi otomatis.',
+        source: 'SHIPPING_OVERPAYMENT',
+        source_key,
+        auto_generated: true,
+        status: 'REQUESTED',
+      },
+    });
+
+    if (invoice_id) {
+      await this.prisma.invoice.update({
+        where: { id: invoice_id },
+        data: { status: 'REFUND_DUE' },
+      });
+    }
+    return refund;
+  }
 }
+

@@ -27,14 +27,21 @@ export async function createOrderItemWithProduct(
         size: pData.size || item.size || null,
         store_location: pData.store_location || pData.storeLocation || null,
         product_url: pData.product_url || pData.productUrl || null,
-        image_url: pData.image_url || pData.imageUrl || null,
-        image_urls: pData.image_urls || (pData.image_url || pData.imageUrl ? [pData.image_url || pData.imageUrl] : []),
+        image_urls:
+          pData.image_urls ||
+          (pData.image_url || pData.imageUrl ? [pData.image_url || pData.imageUrl] : []),
         default_currency: pData.default_currency || pData.defaultCurrency || 'IDR',
         stock_mode: pData.stock_mode || pData.stockMode || 'EVENT',
         stock_quantity: stockQty,
-        buy_price: Number(pData.buy_price ?? pData.buyPrice ?? 0),
+        buy_price: Number(
+          pData.buy_price ?? pData.buyPrice ?? pData.newProductBuyPrice ?? 0
+        ),
         selling_price: Number(
-          item.unit_price_foreign ?? item.unitPriceForeign ?? pData.selling_price ?? pData.sellingPrice ?? 0
+          item.unit_price_foreign ??
+            item.unitPriceForeign ??
+            pData.selling_price ??
+            pData.sellingPrice ??
+            0
         ),
         period_id: pData.period_id || pData.periodId || fallbackPeriodId || null,
         notes: pData.notes || null,
@@ -67,7 +74,9 @@ export async function createOrderItemWithProduct(
     }
   }
   const fulfillmentStatus =
-    item.fulfillment_status || item.fulfillmentStatus || (sourceType === 'READY_STOCK' ? 'AVAILABLE' : 'PENDING');
+    item.fulfillment_status ||
+    item.fulfillmentStatus ||
+    (sourceType === 'READY_STOCK' ? 'AVAILABLE' : 'PENDING');
   const keptUntil = fulfillmentStatus === 'KEPT' ? item.kept_until || item.keptUntil : null;
   const unitPrice = Number(item.unit_price_foreign ?? item.unitPriceForeign ?? 0);
   const targetPrice = Number(item.target_price_idr ?? item.targetPriceIdr ?? unitPrice ?? 0);
@@ -93,7 +102,13 @@ export async function createOrderItemWithProduct(
   });
 
   if (sourceType === 'READY_STOCK' && activeProductId) {
-    await stockService.reserveReadyStock(tx, activeProductId, Number(item.quantity || 1), userId, String(row.id));
+    await stockService.reserveReadyStock(
+      tx,
+      activeProductId,
+      Number(item.quantity || 1),
+      userId,
+      String(row.id)
+    );
   }
 
   await tx.item_status_history.create({

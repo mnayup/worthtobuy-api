@@ -21,7 +21,11 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
       if (item.fulfillment_status === 'PENDING') {
         await prisma.order_item.update({
           where: { id: item.id },
-          data: { fulfillment_status: 'AVAILABLE', purchase_status: 'PURCHASED', status_updated_at: new Date() },
+          data: {
+            fulfillment_status: 'AVAILABLE',
+            purchase_status: 'PURCHASED',
+            status_updated_at: new Date(),
+          },
         });
       }
       continue;
@@ -30,11 +34,65 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
     if (item.purchases && item.purchases.length > 0) continue;
 
     const brand = item.brand_name || item.product?.brand_name || '-';
-    const estimated = Number(item.target_price_idr || item.unit_price_foreign || 0);
+    const buyPrice = Number(item.product?.buy_price || 0);
+    const unitCost = buyPrice > 0
+      ? buyPrice
+      : Number(item.target_price_idr || item.unit_price_foreign || 0);
+    const estimated = unitCost * Number(item.quantity || 1);
+
+    // Grouping: Check if another item in the same order already has a purchase
+    let purchaseNumber: string | null = null;
+    let batchNumber = 1;
+
+    const orderExisting = await prisma.purchase.findFirst({
+      where: { order_item: { order_id: order.id } },
+      orderBy: { id: 'asc' },
+    });
+
+    if (orderExisting) {
+      purchaseNumber = orderExisting.purchase_number;
+      batchNumber = orderExisting.batch_number || 1;
+    } else {
+      // Check if same event & product & variant & size already has an active or previous purchase
+      const productWhere: any = {
+        period_id: order.period_id,
+        order_item: {
+          variation: item.variation ?? null,
+          size: item.size ?? null,
+          ...(item.product_id
+            ? { product_id: item.product_id }
+            : { manual_product_name: item.manual_product_name }),
+        },
+      };
+
+      const existingForProduct = await prisma.purchase.findMany({
+        where: productWhere,
+        orderBy: [{ batch_number: 'desc' }, { id: 'desc' }],
+      });
+
+      if (existingForProduct.length > 0) {
+        const latest = existingForProduct[0];
+        if (latest.status === 'WAITING_PURCHASE') {
+          purchaseNumber = latest.purchase_number;
+          batchNumber = latest.batch_number || 1;
+        } else {
+          // If already purchased on this event, insert as Batch 2 (or next batch)
+          batchNumber = (latest.batch_number || 1) + 1;
+          const baseNum = latest.purchase_number.replace(/-B\d+$/, '');
+          purchaseNumber = `${baseNum}-B${batchNumber}`;
+        }
+      }
+    }
+
+    if (!purchaseNumber) {
+      purchaseNumber = sequence('PUR');
+      batchNumber = 1;
+    }
 
     await prisma.purchase.create({
       data: {
-        purchase_number: sequence('PUR'),
+        purchase_number: purchaseNumber,
+        batch_number: batchNumber,
         purchase_date: new Date(),
         period_id: order.period_id,
         order_item_id: item.id,
@@ -102,7 +160,9 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       tracking_number: null,
       shipping_cost: order.customer_shipping || 0,
       status: 'WAITING_PACKING',
-      notes: itemsSummary ? `Item to pack: ${itemsSummary}` : `Pengiriman otomatis dibuat untuk pesanan ${order.order_number}.`,
+      notes: itemsSummary
+        ? `Item to pack: ${itemsSummary}`
+        : `Pengiriman otomatis dibuat untuk pesanan ${order.order_number}.`,
     },
   });
 }
