@@ -18,7 +18,7 @@ async function bootstrap() {
 
   // Health check
   const httpAdapter = app.getHttpAdapter();
-  httpAdapter.get('/api/health', (_req: any, res: any) => {
+  httpAdapter.get('/health', (_req: any, res: any) => {
     res.json({ status: 'ok', service: 'worthtobuy-api', framework: 'nestjs' });
   });
 
