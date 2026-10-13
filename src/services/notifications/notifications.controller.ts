@@ -4,9 +4,9 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @UseGuards(JwtAuthGuard)
-@Controller('api/notifications')
+@Controller('notifications')
 export class NotificationsController {
-  constructor(private notificationsService: NotificationsService) {}
+  constructor(private notificationsService: NotificationsService) { }
 
   @Get()
   async findAll(@CurrentUser('id') userId: number) {

@@ -8,7 +8,7 @@ import { auditLog } from '../../common/utils/audit.utils';
 import { PrismaService } from '../../config/prisma/prisma.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller('api/shopping-list')
+@Controller('shopping-list')
 export class ShoppingListController {
   constructor(
     private shoppingListService: ShoppingListService,

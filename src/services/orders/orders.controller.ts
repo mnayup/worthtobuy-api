@@ -8,7 +8,7 @@ import { auditLog } from '../../common/utils/audit.utils';
 import { PrismaService } from '../../config/prisma/prisma.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller('api/orders')
+@Controller('orders')
 export class OrdersController {
   constructor(
     private ordersService: OrdersService,
@@ -25,7 +25,7 @@ export class OrdersController {
     return this.ordersService.findAll(query);
   }
 
-    @Get('summary')
+  @Get('summary')
   async getSummary() {
     return this.ordersService.getSummary();
   }

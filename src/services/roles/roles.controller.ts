@@ -8,12 +8,12 @@ import { auditLog } from '../../common/utils/audit.utils';
 import { PrismaService } from '../../config/prisma/prisma.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller('api/roles')
+@Controller('roles')
 export class RolesController {
   constructor(
     private rolesService: RolesService,
     private prisma: PrismaService,
-  ) {}
+  ) { }
 
   @Get('catalog')
   @Roles('OWNER', 'ADMIN')

@@ -6,9 +6,9 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller('api/ai')
+@Controller('ai')
 export class AiController {
-  constructor(private aiService: AiService) {}
+  constructor(private aiService: AiService) { }
 
   @Get('status')
   @Roles('OWNER', 'FINANCE', 'ADMIN')

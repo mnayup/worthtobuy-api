@@ -1,9 +1,9 @@
 import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
 import { PublicService } from './public.service';
 
-@Controller('api/public')
+@Controller('public')
 export class PublicController {
-  constructor(private readonly publicService: PublicService) {}
+  constructor(private readonly publicService: PublicService) { }
 
   @Get('overview')
   async getOverview() {

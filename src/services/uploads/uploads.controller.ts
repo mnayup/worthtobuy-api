@@ -8,9 +8,9 @@ class PresignedUrlDto {
   entityType: string;
 }
 
-@Controller('api/uploads')
+@Controller('uploads')
 export class UploadsController {
-  constructor(private readonly uploadsService: UploadsService) {}
+  constructor(private readonly uploadsService: UploadsService) { }
 
   @Post('presigned-url')
   async getPresignedUrl(@Body() dto: PresignedUrlDto) {
