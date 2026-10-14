@@ -88,12 +88,25 @@ export async function fetchPublicInvoiceData(
   return {
     invoice,
     bankSettings: {
-      bankName: invoiceSettings.bankName || 'BCA (Bank Central Asia)',
-      accountNumber: invoiceSettings.accountNumber || '1234567890',
-      accountHolder: invoiceSettings.accountHolder || 'WORTHTOBUY',
+      bankName:
+        invoiceSettings.bankName ||
+        process.env.DEFAULT_BANK_NAME ||
+        'BCA (Bank Central Asia)',
+      accountNumber:
+        invoiceSettings.accountNumber ||
+        process.env.DEFAULT_BANK_ACCOUNT ||
+        '1234567890',
+      accountHolder:
+        invoiceSettings.accountHolder ||
+        process.env.DEFAULT_BANK_HOLDER ||
+        'WORTHTOBUY',
       footer: invoiceSettings.footer || '',
-      brandName: brandSettings.name || 'WORTHTOBUY',
-      whatsapp: brandSettings.whatsapp || '+6281234567890',
+      brandName:
+        brandSettings.name || process.env.BRAND_NAME || 'WORTHTOBUY',
+      whatsapp:
+        brandSettings.whatsapp ||
+        process.env.BRAND_WHATSAPP ||
+        '+6285186852535',
     },
   };
 }

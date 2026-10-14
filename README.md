@@ -61,7 +61,7 @@ yarn seed
 yarn start:dev
 ```
 Server akan aktif di: **http://localhost:4000**  
-Health check: **http://localhost:4000/api/health**
+Health check: **http://localhost:4000/health**
 
 ---
 

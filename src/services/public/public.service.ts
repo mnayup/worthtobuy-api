@@ -48,12 +48,16 @@ export class PublicService {
 
     return {
       brand: {
-        name: 'WORTHTOBUY',
-        tagline: 'Your Trusted Jastip Bestie & Personal Shopper Nasional',
-        instagram: '@worthtobuy_id',
-        instagramUrl: 'https://www.instagram.com/worthtobuy_id',
-        whatsapp: '+6281234567890',
-        city: 'Indonesia',
+        name: process.env.BRAND_NAME || 'WORTHTOBUY',
+        tagline:
+          process.env.BRAND_TAGLINE ||
+          'Your Trusted Jastip Bestie & Personal Shopper Nasional',
+        instagram: process.env.BRAND_INSTAGRAM || '@worthtobuy_sub',
+        instagramUrl:
+          process.env.BRAND_INSTAGRAM_URL ||
+          'https://www.instagram.com/worthtobuy_sub',
+        whatsapp: process.env.BRAND_WHATSAPP || '+6285186852535',
+        city: process.env.BRAND_CITY || 'Indonesia',
         establishedYear: 2019,
         stats: {
           followers: '3,200+',
