@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { 
   S3Client, 
   PutObjectCommand, 
+  GetObjectCommand,
   CreateBucketCommand, 
   HeadBucketCommand,
   PutBucketPolicyCommand,
@@ -10,6 +11,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import * as crypto from 'crypto';
+import type { Readable } from 'stream';
 
 @Injectable()
 export class UploadsService implements OnModuleInit {
@@ -21,22 +23,27 @@ export class UploadsService implements OnModuleInit {
   private readonly logger = new Logger(UploadsService.name);
 
   constructor(private configService: ConfigService) {
-    const rawEndpoint = this.configService.get<string>('MINIO_ENDPOINT') || 'localhost';
+    const rawEndpoint = this.configService.get<string>('MINIO_ENDPOINT') || 's3.jastip-worthtobuy.com';
     // Strip protocol (http:// or https://), trailing path, and port if user included them in MINIO_ENDPOINT
-    const cleanEndpoint = rawEndpoint.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').split(':')[0] || 'localhost';
-    const port = Number(this.configService.get<number>('MINIO_PORT')) || 9000;
+    const cleanEndpoint = rawEndpoint.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').split(':')[0] || 's3.jastip-worthtobuy.com';
+    const port = Number(this.configService.get<number>('MINIO_PORT')) || 443;
     const accessKey = this.configService.get<string>('MINIO_ACCESS_KEY') || 'minioadmin';
     const secretKey = this.configService.get<string>('MINIO_SECRET_KEY') || 'minioadmin';
     this.bucketName = this.configService.get<string>('MINIO_BUCKET_NAME') || 'worthtobuy';
 
-    const useSsl = this.configService.get<string>('MINIO_USE_SSL') === 'true' || rawEndpoint.startsWith('https://');
+    const useSsl = this.configService.get<string>('MINIO_USE_SSL') === 'true' || rawEndpoint.startsWith('https://') || port === 443;
     this.protocol = useSsl ? 'https' : 'http';
     this.endpoint = cleanEndpoint;
     this.port = port;
 
+    const endpointUrl =
+      (this.protocol === 'https' && this.port === 443) || (this.protocol === 'http' && this.port === 80)
+        ? `${this.protocol}://${this.endpoint}`
+        : `${this.protocol}://${this.endpoint}:${this.port}`;
+
     this.s3Client = new S3Client({
       region: 'us-east-1',
-      endpoint: `${this.protocol}://${this.endpoint}:${this.port}`,
+      endpoint: endpointUrl,
       credentials: {
         accessKeyId: accessKey,
         secretAccessKey: secretKey,
@@ -113,10 +120,66 @@ export class UploadsService implements OnModuleInit {
       );
       this.logger.log(`CORS configuration applied to bucket "${this.bucketName}".`);
     } catch (err: any) {
-      if (err.name !== 'NotImplemented' && err.Code !== 'NotImplemented') {
+      if (err.name === 'NotImplemented' || err.Code === 'NotImplemented' || err.$metadata?.httpStatusCode === 501) {
+        this.logger.log(`Bucket CORS handled by MinIO server/proxy.`);
+      } else {
         this.logger.warn(`Could not set CORS configuration: ${err.message}`);
       }
     }
+  }
+
+  getPublicUrl(key: string): string {
+    const minioPublicUrl = this.configService.get<string>('MINIO_PUBLIC_URL');
+    if (minioPublicUrl) {
+      return `${minioPublicUrl.replace(/\/+$/, '')}/${this.bucketName}/${key}`;
+    }
+    const endpointHost =
+      (this.protocol === 'https' && this.port === 443) || (this.protocol === 'http' && this.port === 80)
+        ? `${this.protocol}://${this.endpoint}`
+        : `${this.protocol}://${this.endpoint}:${this.port}`;
+    return `${endpointHost}/${this.bucketName}/${key}`;
+  }
+
+  async uploadBuffer(
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    entityType: string = 'misc'
+  ) {
+    const uniqueId = crypto.randomUUID();
+    const cleanFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const key = `${entityType}/${uniqueId}-${cleanFilename}`;
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+    });
+
+    await this.s3Client.send(command);
+    const publicUrl = this.getPublicUrl(key);
+
+    return {
+      publicUrl,
+      key,
+    };
+  }
+
+  async getObjectStream(key: string) {
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+    });
+
+    const data = await this.s3Client.send(command);
+    return {
+      stream: data.Body as Readable,
+      contentType: data.ContentType || 'application/octet-stream',
+      contentLength: data.ContentLength,
+      etag: data.ETag,
+      lastModified: data.LastModified,
+    };
   }
 
   async generatePresignedUrl(filename: string, contentType: string, entityType: string) {
@@ -131,7 +194,7 @@ export class UploadsService implements OnModuleInit {
     });
 
     const presignedUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 3600 });
-    const publicUrl = `${this.protocol}://${this.endpoint}:${this.port}/${this.bucketName}/${key}`;
+    const publicUrl = this.getPublicUrl(key);
 
     return {
       presignedUrl,

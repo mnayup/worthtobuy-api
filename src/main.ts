@@ -9,7 +9,9 @@ import { ReminderService } from './services/shared/reminder.service';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.use(helmet());
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }));
   app.enableCors({ origin: true, credentials: true });
   app.use(morgan('dev'));
 
