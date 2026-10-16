@@ -7,7 +7,9 @@ import {
   CreateBucketCommand, 
   HeadBucketCommand,
   PutBucketPolicyCommand,
-  PutBucketCorsCommand
+  PutBucketCorsCommand,
+  DeleteBucketCommand,
+  DeleteObjectCommand
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import * as crypto from 'crypto';
@@ -202,4 +204,83 @@ export class UploadsService implements OnModuleInit {
       key,
     };
   }
+
+  extractKeyFromUrl(fileUrl: string): string | null {
+    if (!fileUrl || typeof fileUrl !== 'string') return null;
+    const trimmed = fileUrl.trim();
+    if (!trimmed) return null;
+
+    try {
+      // Handles both absolute URLs (https://s3.domain.com/worthtobuy/products/uuid-file.jpg)
+      // and relative paths (/uploads/file/products/uuid-file.jpg or products/uuid-file.jpg)
+      let pathname = trimmed;
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        const parsed = new URL(trimmed);
+        pathname = parsed.pathname;
+      }
+
+      // Remove leading slashes
+      pathname = pathname.replace(/^\/+/, '');
+
+      // If URL pattern contains /uploads/file/<key>
+      if (pathname.includes('uploads/file/')) {
+        return pathname.substring(pathname.indexOf('uploads/file/') + 'uploads/file/'.length);
+      }
+
+      // If URL starts with bucketName/
+      if (pathname.startsWith(`${this.bucketName}/`)) {
+        return pathname.substring(this.bucketName.length + 1);
+      }
+
+      // If already a key like 'products/uuid-name.png' or 'brand/uuid-logo.png'
+      if (/^(invoices|products|shipments|expenses|payments|purchases|brand|orders|misc)\//i.test(pathname)) {
+        return pathname;
+      }
+
+      // Fallback: check if bucketName exists in segments
+      const parts = pathname.split('/');
+      const bucketIdx = parts.indexOf(this.bucketName);
+      if (bucketIdx !== -1 && bucketIdx < parts.length - 1) {
+        return parts.slice(bucketIdx + 1).join('/');
+      }
+
+      return null;
+    } catch (e) {
+      this.logger.warn(`Could not extract S3 key from url: ${fileUrl}`);
+      return null;
+    }
+  }
+
+  async deleteFile(key: string): Promise<boolean> {
+    if (!key) return false;
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+      await this.s3Client.send(command);
+      this.logger.log(`Deleted object "${key}" from bucket "${this.bucketName}"`);
+      return true;
+    } catch (err: any) {
+      this.logger.error(`Failed to delete object "${key}": ${err.message}`);
+      return false;
+    }
+  }
+
+  async deleteFileByUrl(fileUrl?: string | null): Promise<boolean> {
+    if (!fileUrl) return false;
+    const key = this.extractKeyFromUrl(fileUrl);
+    if (!key) return false;
+    return this.deleteFile(key);
+  }
+
+  async deleteFilesByUrl(urls?: (string | null | undefined)[]): Promise<void> {
+    if (!urls || !Array.isArray(urls)) return;
+    for (const url of urls) {
+      if (url) {
+        await this.deleteFileByUrl(url);
+      }
+    }
+  }
 }
+

@@ -77,7 +77,11 @@ export async function fetchPublicInvoiceData(
     throw new NotFoundException(`Invoice "${cleanNumber}" tidak ditemukan.`);
   }
 
-  const rawSettings = await prisma.setting.findMany();
+  const [rawSettings, brandRecord, invoiceRecord] = await Promise.all([
+    prisma.setting.findMany(),
+    prisma.brand_setting.findFirst({ orderBy: { id: 'desc' } }),
+    prisma.invoice_setting.findFirst({ orderBy: { id: 'desc' } }),
+  ]);
   const settings: Record<string, any> = Object.fromEntries(
     rawSettings.map((x) => [x.key, x.value])
   );
@@ -89,24 +93,33 @@ export async function fetchPublicInvoiceData(
     invoice,
     bankSettings: {
       bankName:
+        invoiceRecord?.bank_name ||
         invoiceSettings.bankName ||
         process.env.DEFAULT_BANK_NAME ||
         'BCA (Bank Central Asia)',
       accountNumber:
+        invoiceRecord?.account_number ||
         invoiceSettings.accountNumber ||
         process.env.DEFAULT_BANK_ACCOUNT ||
         '1234567890',
       accountHolder:
+        invoiceRecord?.account_holder ||
         invoiceSettings.accountHolder ||
         process.env.DEFAULT_BANK_HOLDER ||
         'WORTHTOBUY',
-      footer: invoiceSettings.footer || '',
+      footer: invoiceRecord?.footer || invoiceSettings.footer || '',
       brandName:
-        brandSettings.name || process.env.BRAND_NAME || 'WORTHTOBUY',
+        brandRecord?.name ||
+        brandSettings.name ||
+        process.env.BRAND_NAME ||
+        'WORTHTOBUY',
       whatsapp:
+        brandRecord?.whatsapp ||
+        invoiceRecord?.whatsapp ||
         brandSettings.whatsapp ||
+        invoiceSettings.whatsapp ||
         process.env.BRAND_WHATSAPP ||
-        '+6285186852535',
+        '6285186852535',
     },
   };
 }

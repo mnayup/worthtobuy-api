@@ -647,3 +647,35 @@ model setting {
 
   @@map("settings")
 }
+
+model brand_setting {
+  id            Int      @id @default(autoincrement())
+  name          String?
+  tagline       String?
+  whatsapp      String?
+  instagram     String?
+  instagram_url String?
+  primary_color String?  @default("#b7332b")
+  logo_url      String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@map("brand_settings")
+}
+
+model invoice_setting {
+  id             Int      @id @default(autoincrement())
+  prefix         String   @default("WTB-INV")
+  business_name  String?
+  whatsapp       String?
+  email          String?
+  address        String?
+  bank_name      String?
+  account_number String?
+  account_holder String?
+  footer         String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@map("invoice_settings")
+}

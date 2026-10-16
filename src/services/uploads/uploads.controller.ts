@@ -2,6 +2,7 @@ import {
   Controller, 
   Post, 
   Get, 
+  Delete,
   Body, 
   Req, 
   Res, 
@@ -100,6 +101,17 @@ export class UploadsController {
       this.logger.error(`Failed to retrieve file ${key}: ${err.message}`);
       res.status(500).json({ message: 'Error retrieving file' });
     }
+  }
+
+  @Delete('file')
+  async deleteFile(@Body('url') fileUrl: string, @Body('key') fileKey?: string) {
+    if (!fileUrl && !fileKey) {
+      throw new BadRequestException('Either url or key is required');
+    }
+    const success = fileKey 
+      ? await this.uploadsService.deleteFile(fileKey) 
+      : await this.uploadsService.deleteFileByUrl(fileUrl);
+    return { success };
   }
 }
 

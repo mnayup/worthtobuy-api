@@ -33,31 +33,88 @@ export class PublicService {
       }),
     ]);
 
-    const categoriesRaw = await this.prisma.product.findMany({
-      where: {
-        deleted_at: null,
-        is_active: true,
-        stock_mode: { in: ['READY_STOCK', 'BOTH'] },
-        category: { not: null },
-      },
-      select: { category: true },
-      distinct: ['category'],
-    });
+    const [categoriesRaw, rawSettings, brandRecord, invoiceRecord] = await Promise.all([
+      this.prisma.product.findMany({
+        where: {
+          deleted_at: null,
+          is_active: true,
+          stock_mode: { in: ['READY_STOCK', 'BOTH'] },
+          category: { not: null },
+        },
+        select: { category: true },
+        distinct: ['category'],
+      }),
+      this.prisma.setting.findMany(),
+      this.prisma.brand_setting.findFirst({ orderBy: { id: 'desc' } }),
+      this.prisma.invoice_setting.findFirst({ orderBy: { id: 'desc' } }),
+    ]);
+
+    const settingsMap = Object.fromEntries(rawSettings.map((x) => [x.key, x.value]));
+    const fallbackBrandVal = (settingsMap['brand'] as any) || {};
+    const fallbackInvoiceVal = (settingsMap['invoice'] as any) || {};
+
+    const brandName =
+      brandRecord?.name || fallbackBrandVal.name || process.env.BRAND_NAME || 'WORTHTOBUY';
+    const brandTagline =
+      brandRecord?.tagline ||
+      fallbackBrandVal.tagline ||
+      process.env.BRAND_TAGLINE ||
+      'Your Trusted Jastip Bestie & Personal Shopper Nasional';
+    const brandWhatsapp =
+      brandRecord?.whatsapp ||
+      fallbackBrandVal.whatsapp ||
+      invoiceRecord?.whatsapp ||
+      fallbackInvoiceVal.whatsapp ||
+      process.env.BRAND_WHATSAPP ||
+      '6285186852535';
+    const brandInstagram =
+      brandRecord?.instagram ||
+      fallbackBrandVal.instagram ||
+      process.env.BRAND_INSTAGRAM ||
+      '@worthtobuy_sub';
+    const brandInstagramUrl =
+      brandRecord?.instagram_url ||
+      fallbackBrandVal.instagramUrl ||
+      process.env.BRAND_INSTAGRAM_URL ||
+      'https://www.instagram.com/worthtobuy_sub';
+    const brandPrimaryColor =
+      brandRecord?.primary_color || fallbackBrandVal.primaryColor || '#b7332b';
+    const brandLogoUrl =
+      brandRecord?.logo_url || fallbackBrandVal.logoUrl || '/worthtobuy-logo.png';
+
+    const bankName =
+      invoiceRecord?.bank_name ||
+      fallbackInvoiceVal.bankName ||
+      process.env.DEFAULT_BANK_NAME ||
+      'BCA (Bank Central Asia)';
+    const bankAccount =
+      invoiceRecord?.account_number ||
+      fallbackInvoiceVal.accountNumber ||
+      process.env.DEFAULT_BANK_ACCOUNT ||
+      '1234567890';
+    const bankHolder =
+      invoiceRecord?.account_holder ||
+      fallbackInvoiceVal.accountHolder ||
+      process.env.DEFAULT_BANK_HOLDER ||
+      'WORTHTOBUY';
 
     const categories = categoriesRaw.map((c) => c.category).filter(Boolean);
 
     return {
       brand: {
-        name: process.env.BRAND_NAME || 'WORTHTOBUY',
-        tagline:
-          process.env.BRAND_TAGLINE ||
-          'Your Trusted Jastip Bestie & Personal Shopper Nasional',
-        instagram: process.env.BRAND_INSTAGRAM || '@worthtobuy_sub',
-        instagramUrl:
-          process.env.BRAND_INSTAGRAM_URL ||
-          'https://www.instagram.com/worthtobuy_sub',
-        whatsapp: process.env.BRAND_WHATSAPP || '+6285186852535',
+        name: brandName,
+        tagline: brandTagline,
+        instagram: brandInstagram,
+        instagramUrl: brandInstagramUrl,
+        whatsapp: brandWhatsapp,
         city: process.env.BRAND_CITY || 'Indonesia',
+        primaryColor: brandPrimaryColor,
+        logoUrl: brandLogoUrl,
+        bank: {
+          bankName,
+          accountNumber: bankAccount,
+          accountHolder: bankHolder,
+        },
         establishedYear: 2019,
         stats: {
           followers: '3,200+',
@@ -210,8 +267,25 @@ export class PublicService {
     const categories = categoriesRaw.map((c) => c.category).filter(Boolean);
     const brands = brandsRaw.map((b) => b.brand_name).filter(Boolean);
 
+    const normalizedItems = items.map((p) => {
+      const rawImgs = p.image_urls || [];
+      const primaryImg =
+        p.image_url ||
+        (Array.isArray(rawImgs) && rawImgs.length > 0 ? rawImgs[0] : null);
+      return {
+        ...p,
+        imageUrl: primaryImg,
+        imageUrls: rawImgs,
+        brandName: p.brand_name,
+        sellingPrice: Number(p.selling_price),
+        buyPrice: Number(p.buy_price),
+        stockQuantity: p.stock_quantity,
+        stockMode: p.stock_mode,
+      };
+    });
+
     return {
-      items,
+      items: normalizedItems,
       total,
       page,
       limit,
@@ -224,7 +298,7 @@ export class PublicService {
   }
 
   async getProductDetail(id: number) {
-    return this.prisma.product.findFirstOrThrow({
+    const p = await this.prisma.product.findFirstOrThrow({
       where: {
         id,
         deleted_at: null,
@@ -242,6 +316,22 @@ export class PublicService {
         },
       },
     });
+
+    const rawImgs = p.image_urls || [];
+    const primaryImg =
+      p.image_url ||
+      (Array.isArray(rawImgs) && rawImgs.length > 0 ? rawImgs[0] : null);
+
+    return {
+      ...p,
+      imageUrl: primaryImg,
+      imageUrls: rawImgs,
+      brandName: p.brand_name,
+      sellingPrice: Number(p.selling_price),
+      buyPrice: Number(p.buy_price),
+      stockQuantity: p.stock_quantity,
+      stockMode: p.stock_mode,
+    };
   }
 
   async trackOrder(identifier: string) {

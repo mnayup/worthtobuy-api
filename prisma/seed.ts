@@ -12,9 +12,12 @@ const DEFAULT_SETTINGS = [
   {
     key: 'brand',
     value: {
-      name: 'WORTHTOBUY',
-      tagline: 'Your trusted jastip bestie',
-      primaryColor: '#9A633B',
+      name: process.env.BRAND_NAME || 'WORTHTOBUY',
+      tagline: process.env.BRAND_TAGLINE || 'Your Trusted Jastip Bestie & Personal Shopper Nasional',
+      whatsapp: process.env.BRAND_WHATSAPP || '6285186852535',
+      instagram: process.env.BRAND_INSTAGRAM || '@worthtobuy_sub',
+      instagramUrl: process.env.BRAND_INSTAGRAM_URL || 'https://www.instagram.com/worthtobuy_sub',
+      primaryColor: '#b7332b',
       secondaryColor: '#B8322C',
       accentColor: '#F3C32F',
       logoUrl: '/worthtobuy-logo.png',
@@ -24,13 +27,13 @@ const DEFAULT_SETTINGS = [
     key: 'invoice',
     value: {
       prefix: 'WTB-INV',
-      businessName: 'WORTHTOBUY',
-      whatsapp: '',
+      businessName: process.env.BRAND_NAME || 'WORTHTOBUY',
+      whatsapp: process.env.BRAND_WHATSAPP || '6285186852535',
       email: '',
       address: '',
-      bankName: '',
-      accountNumber: '',
-      accountHolder: '',
+      bankName: process.env.DEFAULT_BANK_NAME || 'BCA (Bank Central Asia)',
+      accountNumber: process.env.DEFAULT_BANK_ACCOUNT || '1234567890',
+      accountHolder: process.env.DEFAULT_BANK_HOLDER || 'WORTHTOBUY',
       footer: 'Terima kasih sudah belanja bersama WORTHTOBUY. Simpan invoice ini sebagai bukti transaksi.',
     },
   },
@@ -219,6 +222,73 @@ async function main() {
       update: { value: setting.value as any },
       create: { key: setting.key, value: setting.value as any },
     });
+  }
+
+  // Seed rigid relational models
+  const brandVal = DEFAULT_SETTINGS.find((s) => s.key === 'brand')?.value as any;
+  if (brandVal) {
+    const existingBrand = await prisma.brand_setting.findFirst();
+    if (existingBrand) {
+      await prisma.brand_setting.update({
+        where: { id: existingBrand.id },
+        data: {
+          name: brandVal.name,
+          tagline: brandVal.tagline,
+          whatsapp: brandVal.whatsapp,
+          instagram: brandVal.instagram,
+          instagram_url: brandVal.instagramUrl,
+          primary_color: brandVal.primaryColor,
+          logo_url: brandVal.logoUrl,
+        },
+      });
+    } else {
+      await prisma.brand_setting.create({
+        data: {
+          name: brandVal.name,
+          tagline: brandVal.tagline,
+          whatsapp: brandVal.whatsapp,
+          instagram: brandVal.instagram,
+          instagram_url: brandVal.instagramUrl,
+          primary_color: brandVal.primaryColor,
+          logo_url: brandVal.logoUrl,
+        },
+      });
+    }
+  }
+
+  const invoiceVal = DEFAULT_SETTINGS.find((s) => s.key === 'invoice')?.value as any;
+  if (invoiceVal) {
+    const existingInvoice = await prisma.invoice_setting.findFirst();
+    if (existingInvoice) {
+      await prisma.invoice_setting.update({
+        where: { id: existingInvoice.id },
+        data: {
+          prefix: invoiceVal.prefix,
+          business_name: invoiceVal.businessName,
+          whatsapp: invoiceVal.whatsapp,
+          email: invoiceVal.email,
+          address: invoiceVal.address,
+          bank_name: invoiceVal.bankName,
+          account_number: invoiceVal.accountNumber,
+          account_holder: invoiceVal.accountHolder,
+          footer: invoiceVal.footer,
+        },
+      });
+    } else {
+      await prisma.invoice_setting.create({
+        data: {
+          prefix: invoiceVal.prefix,
+          business_name: invoiceVal.businessName,
+          whatsapp: invoiceVal.whatsapp,
+          email: invoiceVal.email,
+          address: invoiceVal.address,
+          bank_name: invoiceVal.bankName,
+          account_number: invoiceVal.accountNumber,
+          account_holder: invoiceVal.accountHolder,
+          footer: invoiceVal.footer,
+        },
+      });
+    }
   }
 
   console.log('Database seeded successfully.');

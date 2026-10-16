@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma/prisma.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
+import { UploadsService } from '../uploads/uploads.service';
 
 type EntityType = 'USER' | 'CUSTOMER' | 'PERIOD' | 'PRODUCT' | 'ORDER' | 'PAYMENT' | 'EXPENSE' | 'REFUND' | 'INVOICE';
 
@@ -9,6 +10,7 @@ export class TrashService {
   constructor(
     private prisma: PrismaService,
     private invoiceCalcService: InvoiceCalcService,
+    private uploadsService: UploadsService,
   ) { }
 
   private getDelegate(entity: EntityType): any {
@@ -104,7 +106,35 @@ export class TrashService {
     const trashed = await delegate.findFirst({ where: { id, deleted_at: { not: null } } });
     if (!trashed) throw new NotFoundException('Data tidak ditemukan di Trash.');
 
+    // Collect any image URLs belonging to this record
+    const imageUrlsToDelete: string[] = [];
+    if (trashed.image_url) imageUrlsToDelete.push(trashed.image_url);
+    if (Array.isArray(trashed.image_urls)) imageUrlsToDelete.push(...trashed.image_urls);
+    if (trashed.avatar_url) imageUrlsToDelete.push(trashed.avatar_url);
+    if (trashed.proof_url) imageUrlsToDelete.push(trashed.proof_url);
+    if (trashed.receipt_url) imageUrlsToDelete.push(trashed.receipt_url);
+    if (trashed.photo_url) imageUrlsToDelete.push(trashed.photo_url);
+
+    // If deleting an Order permanently, also collect order items' photo_url
+    if (entity === 'ORDER') {
+      try {
+        const items = await this.prisma.order_item.findMany({
+          where: { order_id: id },
+          select: { photo_url: true },
+        });
+        items.forEach((item) => {
+          if (item.photo_url) imageUrlsToDelete.push(item.photo_url);
+        });
+      } catch (ignored) {}
+    }
+
     await delegate.delete({ where: { id } });
+
+    // Clean up images from MinIO storage asynchronously
+    if (imageUrlsToDelete.length > 0) {
+      await this.uploadsService.deleteFilesByUrl(imageUrlsToDelete);
+    }
+
     return { success: true };
   }
 }
