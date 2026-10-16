@@ -65,11 +65,106 @@ export const DEFAULT_SETTINGS = [
 ] as const;
 
 const DEFAULT_ROLES = [
-  { name: 'OWNER', can_view_profit: true, permissions: ['*'] },
-  { name: 'ADMIN', can_view_profit: false, permissions: ['customers', 'orders', 'payments', 'purchases', 'shipments'] },
-  { name: 'SHOPPER', can_view_profit: false, permissions: ['shopping-list', 'purchases'] },
-  { name: 'FINANCE', can_view_profit: true, permissions: ['payments', 'expenses', 'refunds', 'reports'] },
-] as const;
+  {
+    name: 'OWNER',
+    description: 'Super Administrator dengan akses penuh tanpa batas ke semua menu dan aksi.',
+    can_view_profit: true,
+    permissions: ['*'],
+  },
+  {
+    name: 'ADMIN',
+    description: 'Manajer Operasional & Master Data.',
+    can_view_profit: false,
+    permissions: [
+      'dashboard:view',
+      'ai-assistant:view',
+      'ai-assistant:chat',
+      'periods:view',
+      'periods:create',
+      'periods:edit',
+      'products:view',
+      'products:create',
+      'products:edit',
+      'products:detail',
+      'products:export',
+      'customers:view',
+      'customers:create',
+      'customers:edit',
+      'customers:detail',
+      'customers:export',
+      'orders:view',
+      'orders:create',
+      'orders:edit',
+      'orders:detail',
+      'orders:status',
+      'orders:export',
+      'purchases:view',
+      'purchases:create',
+      'purchases:edit',
+      'purchases:detail',
+      'shipments:view',
+      'shipments:create',
+      'shipments:edit',
+      'shipments:detail',
+      'shipments:dispatch',
+      'invoices:view',
+      'invoices:create',
+      'invoices:detail',
+      'payments:view',
+      'payments:create',
+    ],
+  },
+  {
+    name: 'SHOPPER',
+    description: 'Petugas Belanja & Tracking Barang Lapangan.',
+    can_view_profit: false,
+    permissions: [
+      'dashboard:view',
+      'periods:view',
+      'products:view',
+      'products:detail',
+      'shopping-list:view',
+      'shopping-list:purchase',
+      'purchases:view',
+      'purchases:create',
+      'purchases:detail',
+      'item-tracking:view',
+      'item-tracking:edit',
+    ],
+  },
+  {
+    name: 'FINANCE',
+    description: 'Petugas Keuangan, Pembayaran, Invoice, dan Laporan Laba Rugi.',
+    can_view_profit: true,
+    permissions: [
+      'dashboard:view',
+      'customers:view',
+      'orders:view',
+      'orders:detail',
+      'invoices:view',
+      'invoices:create',
+      'invoices:edit',
+      'invoices:detail',
+      'invoices:send',
+      'invoices:download',
+      'payments:view',
+      'payments:create',
+      'payments:verify',
+      'refunds:view',
+      'refunds:create',
+      'refunds:edit',
+      'expenses:view',
+      'expenses:create',
+      'expenses:edit',
+      'finance:view',
+      'finance:export',
+      'summary:view',
+      'summary:calculate',
+      'reports:view',
+      'reports:export',
+    ],
+  },
+];
 
 @Injectable()
 export class InitialSetupService implements OnApplicationBootstrap {
@@ -89,12 +184,35 @@ export class InitialSetupService implements OnApplicationBootstrap {
 
       const roles = new Map<string, any>();
       for (const role of DEFAULT_ROLES) {
-        const saved = await this.prisma.role.upsert({
-          where: { name: role.name },
-          update: { can_view_profit: role.can_view_profit, permissions: [...role.permissions] },
-          create: { name: role.name, can_view_profit: role.can_view_profit, permissions: [...role.permissions] },
-        });
-        roles.set(role.name, saved);
+        const existing = await this.prisma.role.findUnique({ where: { name: role.name } });
+        if (!existing) {
+          const created = await this.prisma.role.create({
+            data: {
+              name: role.name,
+              description: role.description,
+              can_view_profit: role.can_view_profit,
+              permissions: [...role.permissions],
+            },
+          });
+          roles.set(role.name, created);
+        } else {
+          // Preserve all existing custom permissions and settings configured by users.
+          // Safety guard: ensure OWNER role always keeps '*' so administrator access is guaranteed.
+          if (role.name === 'OWNER') {
+            const currentPerms = Array.isArray(existing.permissions) ? (existing.permissions as string[]) : [];
+            if (!currentPerms.includes('*')) {
+              const updated = await this.prisma.role.update({
+                where: { id: existing.id },
+                data: { permissions: ['*', ...currentPerms], can_view_profit: true },
+              });
+              roles.set(role.name, updated);
+            } else {
+              roles.set(role.name, existing);
+            }
+          } else {
+            roles.set(role.name, existing);
+          }
+        }
       }
 
       const userCount = await this.prisma.user.count();

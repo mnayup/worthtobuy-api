@@ -159,27 +159,27 @@ model role {
 }
 
 model user {
-  id                    Int                     @id @default(autoincrement())
+  id                    Int                   @id @default(autoincrement())
   name                  String
-  username              String?                 @unique
-  email                 String?                 @unique
+  username              String?               @unique
+  email                 String?               @unique
   password_hash         String
   phone                 String?
   avatar_url            String?
-  is_active             Boolean                 @default(true)
-  mfa_enabled           Boolean                 @default(false)
+  is_active             Boolean               @default(true)
+  mfa_enabled           Boolean               @default(false)
   mfa_secret            String?
-  mfa_recovery_codes    String[]                @default([])
+  mfa_recovery_codes    String[]              @default([])
   role_id               Int
-  role                  role                    @relation(fields: [role_id], references: [id])
+  role                  role                  @relation(fields: [role_id], references: [id])
   orders                order[]
   purchases             purchase[]
-  payments              payment[]               @relation("VerifiedBy")
+  payments              payment[]             @relation("VerifiedBy")
   notifications         notification[]
   inventory_movements   inventory_movement[]
   item_status_histories item_status_history[]
-  created_at            DateTime                @default(now())
-  updated_at            DateTime                @updatedAt
+  created_at            DateTime              @default(now())
+  updated_at            DateTime              @updatedAt
   deleted_at            DateTime?
   deleted_by_id         Int?
 
@@ -474,16 +474,16 @@ model expense {
 }
 
 model shipment {
-  id              Int            @id @default(autoincrement())
-  tracking_number String?        @unique
-  order_id        Int
-  order           order          @relation(fields: [order_id], references: [id])
-  customer_id     Int
-  customer        customer       @relation(fields: [customer_id], references: [id])
-  address         String
-  courier         String
-  service_type    String?
-  weight_kg       Decimal?       @db.Decimal(10, 2)
+  id                       Int            @id @default(autoincrement())
+  tracking_number          String?        @unique
+  order_id                 Int
+  order                    order          @relation(fields: [order_id], references: [id])
+  customer_id              Int
+  customer                 customer       @relation(fields: [customer_id], references: [id])
+  address                  String
+  courier                  String
+  service_type             String?
+  weight_kg                Decimal?       @db.Decimal(10, 2)
   shipping_cost            Decimal        @default(0) @db.Decimal(18, 2)
   actual_shipping_cost     Decimal?       @db.Decimal(18, 2)
   shipping_cost_difference Decimal?       @db.Decimal(18, 2)
@@ -493,8 +493,8 @@ model shipment {
   proof_before_url         String?
   proof_url                String?
   notes                    String?
-  created_at      DateTime       @default(now())
-  updated_at      DateTime       @updatedAt
+  created_at               DateTime       @default(now())
+  updated_at               DateTime       @updatedAt
 
   @@index([order_id])
   @@index([customer_id])
@@ -678,4 +678,21 @@ model invoice_setting {
   updated_at     DateTime @updatedAt
 
   @@map("invoice_settings")
+}
+
+model database_backup_log {
+  id              Int      @id @default(autoincrement())
+  operation_type  String // BACKUP, RESTORE
+  filename        String
+  file_size_bytes BigInt?  @default(0)
+  status          String // SUCCESS, FAILED
+  triggered_by    String? // Username / Email / System
+  user_id         Int?
+  notes           String?
+  error_message   String?  @db.Text
+  created_at      DateTime @default(now())
+
+  @@index([operation_type])
+  @@index([created_at])
+  @@map("database_backup_logs")
 }

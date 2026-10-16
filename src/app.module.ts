@@ -28,8 +28,11 @@ import { InitialSetupService } from './services/shared/initial-setup.service';
 import { UploadsModule } from './services/uploads/uploads.module';
 import { PublicModule } from './services/public/public.module';
 
+import { BackupModule } from './services/backup/backup.module';
+
 @Module({
   imports: [
+    BackupModule,
     UploadsModule,
     PublicModule,
 

@@ -160,11 +160,17 @@ const DEFAULT_ROLES = [
 async function main() {
   console.log('Seeding WORTHTOBUY database...');
   for (const role of DEFAULT_ROLES) {
-    await prisma.role.upsert({
-      where: { name: role.name },
-      update: { description: role.description, can_view_profit: role.can_view_profit, permissions: role.permissions },
-      create: { name: role.name, description: role.description, can_view_profit: role.can_view_profit, permissions: role.permissions },
-    });
+    const existingRole = await prisma.role.findUnique({ where: { name: role.name } });
+    if (!existingRole) {
+      await prisma.role.create({
+        data: {
+          name: role.name,
+          description: role.description,
+          can_view_profit: role.can_view_profit,
+          permissions: role.permissions,
+        },
+      });
+    }
   }
 
   const ownerRole = await prisma.role.findUniqueOrThrow({ where: { name: 'OWNER' } });
