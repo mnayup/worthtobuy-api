@@ -59,8 +59,21 @@ export async function updateConsolidatedPurchaseHelper(
   body: any,
   userId?: number
 ) {
+  const submittedItemIds = (body.items || [])
+    .map((it: any) => Number(it.id || it.purchase_id))
+    .filter((id: number) => Boolean(id) && !isNaN(id));
+  const submittedOrderItemIds = (body.items || [])
+    .map((it: any) => Number(it.order_item_id))
+    .filter((id: number) => Boolean(id) && !isNaN(id));
+
   const rows = await prisma.purchase.findMany({
-    where: { purchase_number: purchaseNumber },
+    where: {
+      OR: [
+        { purchase_number: purchaseNumber },
+        ...(submittedItemIds.length ? [{ id: { in: submittedItemIds } }] : []),
+        ...(submittedOrderItemIds.length ? [{ order_item_id: { in: submittedOrderItemIds } }] : []),
+      ],
+    },
     include: {
       order_item: {
         include: { order: { include: { customer: true } } },
@@ -84,6 +97,8 @@ export async function updateConsolidatedPurchaseHelper(
     const itInput = itemMap.get(row.order_item_id) || itemMap.get(row.id);
     const isRejected = Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE');
     const isBought = Boolean(itInput?.is_bought ?? !isRejected);
+    const rawKeptUntil = itInput?.kept_until !== undefined ? itInput.kept_until : itInput?.keptUntil;
+    const keptUntilData = rawKeptUntil !== undefined ? (rawKeptUntil ? new Date(rawKeptUntil) : null) : undefined;
     const allocatedQty =
       itInput?.allocated_qty !== undefined
         ? Number(itInput.allocated_qty)
@@ -142,7 +157,10 @@ export async function updateConsolidatedPurchaseHelper(
 
       await prisma.order_item.update({
         where: { id: row.order_item_id },
-        data: { quantity: allocatedQty },
+        data: {
+          quantity: allocatedQty,
+          ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+        },
       });
 
       await handlePurchasedTransitionHelper(
@@ -150,53 +168,6 @@ export async function updateConsolidatedPurchaseHelper(
         order,
         row.order_item_id,
         fromStatus,
-        userId
-      );
-
-      // Create new order_item & purchase for the shortage/rejected portion
-      const rejectedItem = await prisma.order_item.create({
-        data: {
-          order_id: order.id,
-          product_id: row.order_item.product_id,
-          manual_product_name: row.order_item.manual_product_name,
-          brand_name: row.order_item.brand_name,
-          variation: row.order_item.variation,
-          size: row.order_item.size,
-          color: row.order_item.color,
-          quantity: shortageQty,
-          unit_price_foreign: row.order_item.unit_price_foreign,
-          target_price_idr: row.order_item.target_price_idr,
-          fulfillment_status: 'UNAVAILABLE',
-          purchase_status: 'UNAVAILABLE',
-        },
-      });
-
-      await prisma.purchase.create({
-        data: {
-          purchase_number: row.purchase_number,
-          batch_number: row.batch_number || 1,
-          purchase_date: row.purchase_date,
-          period_id: row.period_id,
-          order_item_id: rejectedItem.id,
-          product_id: row.product_id,
-          brand_name: row.brand_name,
-          quantity: shortageQty,
-          estimated_price: (Number(row.estimated_price) * shortageQty) / row.quantity,
-          actual_price: 0,
-          price_difference: 0,
-          status: 'UNAVAILABLE',
-          currency_code: 'IDR',
-          exchange_rate: 1,
-          shopper_id: row.shopper_id,
-        },
-      });
-
-      await handleUnavailableTransitionHelper(
-        prisma,
-        refundService,
-        order,
-        rejectedItem.id,
-        'PENDING',
         userId
       );
       continue;
@@ -218,6 +189,13 @@ export async function updateConsolidatedPurchaseHelper(
     });
 
     if (rowStatus === 'PURCHASED') {
+      if (keptUntilData !== undefined) {
+        await prisma.order_item.update({
+          where: { id: row.order_item_id },
+          data: { kept_until: keptUntilData },
+        });
+      }
+
       await handlePurchasedTransitionHelper(
         prisma,
         order,
@@ -225,6 +203,11 @@ export async function updateConsolidatedPurchaseHelper(
         fromStatus,
         userId
       );
+    } else if (keptUntilData !== undefined) {
+      await prisma.order_item.update({
+        where: { id: row.order_item_id },
+        data: { kept_until: keptUntilData },
+      });
     }
   }
 

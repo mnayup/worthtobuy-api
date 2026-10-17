@@ -106,8 +106,18 @@ export class PurchasesService {
 
   async findOne(id: number) {
     const target = await this.prisma.purchase.findUniqueOrThrow({ where: { id } });
+    const where: any =
+      target.status === 'WAITING_PURCHASE' && target.period_id
+        ? {
+            OR: [
+              { purchase_number: target.purchase_number },
+              { period_id: target.period_id, status: 'WAITING_PURCHASE' },
+            ],
+          }
+        : { purchase_number: target.purchase_number };
+
     const allRows = await this.prisma.purchase.findMany({
-      where: { purchase_number: target.purchase_number },
+      where,
       include: {
         product: true,
         period: true,
@@ -125,12 +135,16 @@ export class PurchasesService {
 
   async getSummary() {
     const raw = await this.prisma.purchase.findMany({
-      select: { purchase_number: true, status: true },
+      select: { purchase_number: true, status: true, period_id: true },
     });
     const map = new Map<string, string[]>();
     raw.forEach((r) => {
-      if (!map.has(r.purchase_number)) map.set(r.purchase_number, []);
-      map.get(r.purchase_number)!.push(r.status);
+      const key =
+        r.status === 'WAITING_PURCHASE' && r.period_id
+          ? `EVENT_${r.period_id}_WAITING`
+          : r.purchase_number;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(r.status);
     });
 
     const summary = {

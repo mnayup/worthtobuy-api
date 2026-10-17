@@ -39,6 +39,14 @@ export class InvoicesController {
     return this.invoicesService.findOne(numId);
   }
 
+  @Post('bulk-issue')
+  @Roles('OWNER', 'ADMIN', 'FINANCE')
+  async bulkIssue(@Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
+    const data = await this.invoicesService.bulkIssue(body, userId);
+    await auditLog(this.prisma, userId, 'CREATE', 'Invoice', 'BULK_ISSUE', { orderIds: body.orderIds, count: data.count }, req.ip);
+    return data;
+  }
+
   @Post()
   @Roles('OWNER', 'ADMIN', 'FINANCE')
   async create(@Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {

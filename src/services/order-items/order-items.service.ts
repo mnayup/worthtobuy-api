@@ -160,4 +160,174 @@ export class OrderItemsService {
     await this.refreshOrderItemSummary(data.order_id);
     return data;
   }
+
+  async getKeptCustomers(query: any) {
+    const search = String(query.search || '').trim();
+    const urgency = String(query.urgency || 'ALL').trim();
+
+    const items = await this.prisma.order_item.findMany({
+      where: {
+        fulfillment_status: 'KEPT',
+        order: {
+          deleted_at: null,
+          outstanding_amount: { lte: 0 },
+        },
+      },
+      include: {
+        product: true,
+        order: {
+          include: {
+            customer: true,
+            period: true,
+            shipments: true,
+          },
+        },
+      },
+      orderBy: [{ kept_until: 'asc' }, { id: 'desc' }],
+    });
+
+    const now = Date.now();
+    let totalItems = 0;
+    let expiringSoonCount = 0;
+    let expiredCount = 0;
+
+    const customerMap = new Map<number, any>();
+
+    for (const it of items) {
+      const cust = it.order.customer;
+      if (!cust) continue;
+
+      const keptDate = it.kept_until
+        ? new Date(it.kept_until)
+        : new Date(now + 30 * 86400000);
+      const remainingDays = Math.ceil(
+        (keptDate.getTime() - now) / (1000 * 60 * 60 * 24)
+      );
+
+      totalItems += it.quantity;
+      if (remainingDays < 0) {
+        expiredCount += it.quantity;
+      } else if (remainingDays <= 7) {
+        expiringSoonCount += it.quantity;
+      }
+
+      if (!customerMap.has(cust.id)) {
+        customerMap.set(cust.id, {
+          id: cust.id,
+          full_name: cust.full_name || 'Customer',
+          whatsapp: cust.whatsapp || '',
+          segment: cust.segment || 'REGULAR',
+          address: cust.address || '-',
+          total_kept_quantity: 0,
+          items: [],
+        });
+      }
+
+      const cGroup = customerMap.get(cust.id);
+      cGroup.total_kept_quantity += it.quantity;
+      cGroup.items.push({
+        id: it.id,
+        order_item_id: it.id,
+        product_id: it.product_id,
+        product_name: it.product?.name || it.manual_product_name || 'Item',
+        brand_name: it.product?.brand_name || it.brand_name || '-',
+        image_url: it.product?.image_url || it.photo_url || null,
+        variation: it.variation || null,
+        size: it.size || null,
+        color: it.color || null,
+        quantity: it.quantity,
+        unit_price_foreign: Number(it.unit_price_foreign || 0),
+        order_id: it.order_id,
+        order_number: it.order.order_number,
+        order_date: it.order.order_date,
+        period_name: it.order.period?.name || '-',
+        period_code: it.order.period?.code || '-',
+        kept_until: it.kept_until || keptDate.toISOString(),
+        remaining_days: remainingDays,
+        fulfillment_status: it.fulfillment_status,
+      });
+    }
+
+    let customerList = Array.from(customerMap.values());
+
+    if (search) {
+      const s = search.toLowerCase();
+      customerList = customerList.filter(
+        (c) =>
+          c.full_name.toLowerCase().includes(s) ||
+          c.whatsapp.includes(s) ||
+          c.items.some(
+            (i: any) =>
+              i.product_name.toLowerCase().includes(s) ||
+              i.order_number.toLowerCase().includes(s) ||
+              i.brand_name.toLowerCase().includes(s)
+          )
+      );
+    }
+
+    if (urgency === 'EXPIRED') {
+      customerList = customerList.filter((c) =>
+        c.items.some((i: any) => i.remaining_days < 0)
+      );
+    } else if (urgency === 'EXPIRING_SOON') {
+      customerList = customerList.filter((c) =>
+        c.items.some((i: any) => i.remaining_days >= 0 && i.remaining_days <= 7)
+      );
+    } else if (urgency === 'ACTIVE') {
+      customerList = customerList.filter((c) =>
+        c.items.some((i: any) => i.remaining_days > 7)
+      );
+    }
+
+    return {
+      customers: customerList,
+      summary: {
+        totalCustomers: customerMap.size,
+        totalItems,
+        expiringSoonCount,
+        expiredCount,
+      },
+    };
+  }
+
+  async moveToShipment(itemIds: number[], user_id?: number) {
+    if (!itemIds || !itemIds.length) return { success: false, count: 0 };
+    const validIds = itemIds.map(Number).filter(Boolean);
+
+    const items = await this.prisma.order_item.findMany({
+      where: { id: { in: validIds } },
+      include: { order: { include: { customer: true } } },
+    });
+
+    const affectedOrderIds = new Set<number>();
+
+    for (const it of items) {
+      affectedOrderIds.add(it.order_id);
+      await this.prisma.order_item.update({
+        where: { id: it.id },
+        data: {
+          fulfillment_status: 'READY_TO_SHIP',
+          status_updated_at: new Date(),
+        },
+      });
+
+      await this.prisma.item_status_history.create({
+        data: {
+          order_item_id: it.id,
+          from_status: it.fulfillment_status,
+          to_status: 'READY_TO_SHIP',
+          notes:
+            'Item dipindahkan dari Titip Simpan (KEPT) ke Pengiriman (READY_TO_SHIP).',
+          user_id,
+        },
+      });
+    }
+
+    for (const orderId of affectedOrderIds) {
+      await this.refreshOrderItemSummary(orderId);
+      await this.invoiceCalcService.ensureShipmentForOrder(orderId);
+    }
+
+    return { success: true, count: validIds.length };
+  }
 }

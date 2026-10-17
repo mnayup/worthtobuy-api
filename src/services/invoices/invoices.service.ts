@@ -185,6 +185,144 @@ export class InvoicesService {
     return data;
   }
 
+  async bulkIssue(body: any, userId?: number) {
+    const rawOrderIds: any[] = body.order_ids ?? body.orderIds ?? [];
+    const orderIds = rawOrderIds.map(Number).filter((id) => !isNaN(id) && id > 0);
+    if (!orderIds.length) {
+      throw new BadRequestException('Pilih setidaknya satu pesanan untuk menerbitkan invoice.');
+    }
+
+    const billingModel = body.billing_model || body.billingModel || 'FULL_PAYMENT';
+    const dpPercent = billingModel === 'DP' ? Number(body.dp_percent ?? body.dpPercent ?? 50) : null;
+
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds }, deleted_at: null },
+      include: {
+        customer: true,
+        invoice_links: {
+          include: {
+            invoice: {
+              include: { payments: true, refunds: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!orders.length) {
+      throw new BadRequestException('Pesanan yang dipilih tidak ditemukan.');
+    }
+
+    const validOrders: typeof orders = [];
+    const skippedOrders: { orderNumber: string; reason: string }[] = [];
+
+    for (const order of orders) {
+      if (order.status !== 'NEW') {
+        skippedOrders.push({
+          orderNumber: order.order_number,
+          reason: `Status pesanan bukan NEW (${order.status})`,
+        });
+        continue;
+      }
+
+      const activeLink = order.invoice_links.find((link) => {
+        const isLegacyReplaceable =
+          link.invoice.invoice_number.startsWith('WTB-LEGACY-') &&
+          link.invoice.payments.length === 0 &&
+          link.invoice.refunds.length === 0;
+        return !isLegacyReplaceable;
+      });
+
+      if (activeLink) {
+        skippedOrders.push({
+          orderNumber: order.order_number,
+          reason: `Sudah terhubung ke invoice ${activeLink.invoice.invoice_number}`,
+        });
+      } else {
+        validOrders.push(order);
+      }
+    }
+
+    if (!validOrders.length) {
+      throw new BadRequestException(
+        `Tidak ada pesanan berstatus NEW yang dapat diterbitkan: ${skippedOrders.map((s) => `${s.orderNumber} (${s.reason})`).join(', ')}`
+      );
+    }
+
+    const customerOrderGroups = new Map<number, typeof orders>();
+    for (const order of validOrders) {
+      const list = customerOrderGroups.get(order.customer_id) || [];
+      list.push(order);
+      customerOrderGroups.set(order.customer_id, list);
+    }
+
+    const createdInvoices: any[] = [];
+    const today = new Date();
+
+    for (const [customerId, custOrders] of customerOrderGroups.entries()) {
+      const total_bill = custOrders.reduce((sum, o) => sum + Number(o.total_bill || 0), 0);
+      const dp_amount = billingModel === 'DP' && dpPercent ? Math.round((total_bill * dpPercent) / 100) : null;
+      const legacyInvoiceIds = extractLegacyInvoiceIds(custOrders);
+      const invoiceNumber = sequence('WTB-INV');
+
+      const inv = await this.prisma.$transaction(async (tx) => {
+        if (legacyInvoiceIds.length) {
+          await tx.invoice_order.deleteMany({ where: { invoice_id: { in: legacyInvoiceIds } } });
+          await tx.invoice.deleteMany({
+            where: { id: { in: legacyInvoiceIds }, payments: { none: {} }, refunds: { none: {} } },
+          });
+        }
+
+        return tx.invoice.create({
+          data: {
+            invoice_number: invoiceNumber,
+            customer_id: customerId,
+            invoice_date: today,
+            due_date: today,
+            total_bill,
+            deposit_amount: 0,
+            use_deposit: false,
+            outstanding_amount: total_bill,
+            notes: null,
+            billing_model: billingModel,
+            dp_percent: dpPercent,
+            dp_amount: dp_amount,
+            dp_settlement_note: billingModel === 'DP' ? 'when products are ready to ship' : null,
+            orders: {
+              create: custOrders.map((o) => ({
+                order_id: o.id,
+                snapshot_amount: o.total_bill,
+              })),
+            },
+          },
+          include: {
+            customer: true,
+            orders: { include: { order: true } },
+          },
+        });
+      });
+
+      await this.invoiceCalcService.refreshInvoicePayment(inv.id);
+      await this.prisma.notification.create({
+        data: {
+          type: 'ORDER',
+          title: 'Invoice baru dibuat (Bulk)',
+          message: `${inv.invoice_number} memuat ${custOrders.length} pesanan dari ${inv.customer.full_name}.`,
+          link: `/invoices/${inv.id}`,
+        },
+      });
+
+      createdInvoices.push(inv);
+    }
+
+    return {
+      count: createdInvoices.length,
+      invoiceIds: createdInvoices.map((i) => i.id),
+      invoices: createdInvoices,
+      skipped: skippedOrders,
+    };
+  }
+
   async update(id: number, body: any) {
     const current = await this.prisma.invoice.findUniqueOrThrow({
       where: { id },
@@ -286,6 +424,45 @@ export class InvoicesService {
           use_deposit,
         },
       });
+    }
+
+    const rawKeepItems = body.keep_items !== undefined ? body.keep_items : body.keepItems;
+    if (rawKeepItems !== undefined) {
+      const isKeep = Boolean(rawKeepItems);
+      const rawKeptUntil = body.kept_until !== undefined ? body.kept_until : body.keptUntil;
+      const keptUntil = isKeep
+        ? (rawKeptUntil ? new Date(rawKeptUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
+        : null;
+
+      const invOrders = await this.prisma.invoice_order.findMany({
+        where: { invoice_id: id },
+        select: { order_id: true },
+      });
+      const orderIds = invOrders.map((o) => o.order_id);
+      if (orderIds.length > 0) {
+        await this.prisma.order_item.updateMany({
+          where: { order_id: { in: orderIds } },
+          data: { kept_until: keptUntil },
+        });
+
+        if (isKeep) {
+          await this.prisma.order_item.updateMany({
+            where: {
+              order_id: { in: orderIds },
+              fulfillment_status: 'AVAILABLE',
+            },
+            data: { fulfillment_status: 'KEPT' },
+          });
+        } else {
+          await this.prisma.order_item.updateMany({
+            where: {
+              order_id: { in: orderIds },
+              fulfillment_status: 'KEPT',
+            },
+            data: { fulfillment_status: 'AVAILABLE' },
+          });
+        }
+      }
     }
 
     const refreshed = await this.invoiceCalcService.refreshInvoicePayment(id);

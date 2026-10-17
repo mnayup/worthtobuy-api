@@ -47,6 +47,7 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
       status: p.status,
       fulfillment_status: item.fulfillment_status || 'PENDING',
       purchase_status: item.purchase_status || 'PENDING',
+      kept_until: item.kept_until || null,
     };
   });
 
@@ -123,9 +124,12 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
 export function groupPurchasesByNumber(purchases: any[]): any[] {
   const map = new Map<string, any[]>();
   for (const p of purchases) {
-    const num = p.purchase_number || String(p.id);
-    if (!map.has(num)) map.set(num, []);
-    map.get(num)!.push(p);
+    const key =
+      p.status === 'WAITING_PURCHASE' && p.period_id
+        ? `EVENT_${p.period_id}_WAITING`
+        : p.purchase_number || String(p.id);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(p);
   }
 
   const result: any[] = [];

@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
 import { OrderItemsService } from './order-items.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -14,6 +14,31 @@ export class OrderItemsController {
     private orderItemsService: OrderItemsService,
     private prisma: PrismaService,
   ) { }
+
+  @Get('kept-customers')
+  async getKeptCustomers(@Query() query: any) {
+    return this.orderItemsService.getKeptCustomers(query);
+  }
+
+  @Post('move-to-shipment')
+  @Roles('OWNER', 'ADMIN')
+  async moveToShipment(
+    @Body() body: { itemIds: number[] },
+    @CurrentUser('id') userId: number,
+    @Req() req: any
+  ) {
+    const data = await this.orderItemsService.moveToShipment(body.itemIds, userId);
+    await auditLog(
+      this.prisma,
+      userId,
+      'STATUS_CHANGE',
+      'OrderItem',
+      (body.itemIds || []).join(','),
+      { action: 'MOVE_TO_SHIPMENT', count: data.count },
+      req.ip
+    );
+    return data;
+  }
 
   @Get()
   async findAll(@Query() query: any) {

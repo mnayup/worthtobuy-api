@@ -8,11 +8,18 @@ export async function handlePurchasedTransitionHelper(
   from_status: any,
   user_id?: number
 ) {
+  const currentItem = await prisma.order_item.findUnique({
+    where: { id: order_item_id },
+    select: { kept_until: true },
+  });
+  const isKept = Boolean(currentItem?.kept_until);
+  const targetFulfillmentStatus = isKept ? 'KEPT' : 'AVAILABLE';
+
   await prisma.order_item.update({
     where: { id: order_item_id },
     data: {
       purchase_status: 'PURCHASED',
-      fulfillment_status: 'AVAILABLE',
+      fulfillment_status: targetFulfillmentStatus as any,
       status_updated_at: new Date(),
     },
   });
@@ -21,8 +28,10 @@ export async function handlePurchasedTransitionHelper(
     data: {
       order_item_id,
       from_status,
-      to_status: 'AVAILABLE',
-      notes: 'Status pembelian diubah menjadi Sudah Dibeli (PURCHASED).',
+      to_status: targetFulfillmentStatus as any,
+      notes: isKept
+        ? 'Status pembelian diubah menjadi Sudah Dibeli & Dititip Simpan (KEPT).'
+        : 'Status pembelian diubah menjadi Sudah Dibeli (PURCHASED).',
       user_id,
     },
   });
@@ -39,8 +48,15 @@ export async function handlePurchasedTransitionHelper(
   if (pendingItems === 0) {
     const freshOrder = await prisma.order.findUniqueOrThrow({
       where: { id: order.id },
-      include: { customer: true, shipments: true },
+      include: { customer: true, shipments: true, items: true },
     });
+
+    const activeItems = (freshOrder.items || []).filter(
+      (i) => i.fulfillment_status !== 'UNAVAILABLE'
+    );
+    const allKept =
+      activeItems.length > 0 &&
+      activeItems.every((i) => i.fulfillment_status === 'KEPT');
 
     const isPartial = Number(freshOrder.outstanding_amount) > 0;
     if (isPartial) {
@@ -48,14 +64,15 @@ export async function handlePurchasedTransitionHelper(
         where: { id: freshOrder.id },
         data: { status: 'WAITING_SETTLEMENT' },
       });
-    } else {
+    } else if (!allKept) {
       await prisma.order.update({
         where: { id: freshOrder.id },
         data: { status: 'READY_TO_SHIP' },
       });
     }
 
-    if (!freshOrder.shipments || freshOrder.shipments.length === 0) {
+    // Only create shipment if order is fully paid and not all kept
+    if (!isPartial && !allKept && (!freshOrder.shipments || freshOrder.shipments.length === 0)) {
       const orderWithItems = await prisma.order.findUnique({
         where: { id: freshOrder.id },
         include: { items: { include: { product: true } } },

@@ -238,6 +238,20 @@ export async function createPublicPaymentProof(
     },
   });
 
+  const rawKeepItem = body.keep_item !== undefined ? body.keep_item : body.keepItem;
+  if (rawKeepItem !== undefined) {
+    const isKeep = Boolean(rawKeepItem);
+    const orderIds = (invoice.orders || []).map((link) => link.order_id);
+    if (orderIds.length > 0) {
+      // Set keep date until 1 month after payment submission
+      const kept_until = isKeep ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null;
+      await prisma.order_item.updateMany({
+        where: { order_id: { in: orderIds } },
+        data: { kept_until },
+      });
+    }
+  }
+
   const customerName = invoice.customer?.full_name || 'Pelanggan';
   const notifMsg = `${invoice.invoice_number} • ${customerName} mengunggah bukti transfer `
     + `${method} Rp ${amount.toLocaleString('id-ID')}`;
