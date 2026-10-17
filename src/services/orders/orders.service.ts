@@ -114,7 +114,24 @@ export class OrdersService {
     const rules = await this.feeService.getFeeRules(isReseller ? 'RESELLER' : 'CUSTOMER');
     const automatic = this.feeService.calculateServiceFee(subtotalIdr(body.items || []), rules);
     const resolvedServiceFee = isAuto ? automatic.fee : (body.service_fee ?? body.serviceFee ?? 0);
-    const totals = calculateOrderTotals({ ...body, service_fee: resolvedServiceFee }, body.items || []);
+
+    const rawAdditionalFees = body.additional_fees ?? body.additionalFees;
+    let computedAdditionalFee = body.additional_fee ?? body.additionalFee ?? 0;
+    if (Array.isArray(rawAdditionalFees) && rawAdditionalFees.length > 0) {
+      computedAdditionalFee = rawAdditionalFees.reduce(
+        (sum: number, f: any) => sum + Number(f.amount || 0),
+        0
+      );
+    }
+
+    const totals = calculateOrderTotals(
+      {
+        ...body,
+        service_fee: resolvedServiceFee,
+        additional_fee: computedAdditionalFee,
+      },
+      body.items || []
+    );
 
     const data = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
@@ -128,8 +145,8 @@ export class OrdersService {
           currency_code: body.currency_code || body.currencyCode || 'IDR',
           exchange_rate: Number(body.exchange_rate ?? body.exchangeRate ?? 1),
           ...totals,
+          additional_fees: rawAdditionalFees || null,
           service_fee_mode,
-          service_fee_note: body.service_fee_note || body.serviceFeeNote || null,
           customer_notes: body.customer_notes || body.customerNotes || null,
           internal_notes: body.internal_notes || body.internalNotes || null,
           due_date: body.due_date || body.dueDate ? new Date(body.due_date || body.dueDate) : null,
@@ -218,12 +235,24 @@ export class OrdersService {
         ? Number(body.localShipping)
         : Number(current.local_shipping);
 
-    const additionalFee =
+    const rawAdditionalFees = body.additional_fees !== undefined ? body.additional_fees : body.additionalFees;
+    let additionalFee =
       body.additional_fee !== undefined
         ? Number(body.additional_fee)
         : body.additionalFee !== undefined
         ? Number(body.additionalFee)
         : Number(current.additional_fee);
+
+    if (rawAdditionalFees !== undefined) {
+      if (Array.isArray(rawAdditionalFees) && rawAdditionalFees.length > 0) {
+        additionalFee = rawAdditionalFees.reduce(
+          (sum: number, f: any) => sum + Number(f.amount || 0),
+          0
+        );
+      } else if (rawAdditionalFees === null || (Array.isArray(rawAdditionalFees) && rawAdditionalFees.length === 0)) {
+        additionalFee = 0;
+      }
+    }
 
     const discount =
       body.discount !== undefined
@@ -250,6 +279,9 @@ export class OrdersService {
       ...totals,
       service_fee_mode,
     };
+    if (rawAdditionalFees !== undefined) {
+      updateData.additional_fees = rawAdditionalFees || null;
+    }
     if (body.order_number !== undefined || body.orderNumber !== undefined) {
       updateData.order_number = String(body.order_number ?? body.orderNumber).trim();
     }
@@ -274,9 +306,6 @@ export class OrdersService {
     }
     if (body.status !== undefined) {
       updateData.status = body.status;
-    }
-    if (body.service_fee_note !== undefined || body.serviceFeeNote !== undefined) {
-      updateData.service_fee_note = (body.service_fee_note ?? body.serviceFeeNote) || null;
     }
     if (body.customer_notes !== undefined || body.customerNotes !== undefined) {
       updateData.customer_notes = (body.customer_notes ?? body.customerNotes) || null;

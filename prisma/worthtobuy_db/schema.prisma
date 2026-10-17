@@ -305,11 +305,11 @@ model order {
   product_subtotal_idr     Decimal         @default(0) @db.Decimal(18, 2)
   service_fee              Decimal         @default(0) @db.Decimal(18, 2)
   service_fee_mode         FeeMode         @default(AUTO)
-  service_fee_note         String?
   local_shipping           Decimal         @default(0) @db.Decimal(18, 2)
   international_shipping   Decimal         @default(0) @db.Decimal(18, 2)
   customer_shipping        Decimal         @default(0) @db.Decimal(18, 2)
   additional_fee           Decimal         @default(0) @db.Decimal(18, 2)
+  additional_fees          Json?
   discount                 Decimal         @default(0) @db.Decimal(18, 2)
   total_bill               Decimal         @default(0) @db.Decimal(18, 2)
   paid_amount              Decimal         @default(0) @db.Decimal(18, 2)
