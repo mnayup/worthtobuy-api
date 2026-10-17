@@ -25,10 +25,21 @@ export class PurchasesService {
   async findAll(query: any) {
     const search = String(query.search || '').trim().slice(0, 100);
     const status = query.status ? String(query.status) : undefined;
+    const periodId = query.periodId || query.period_id;
+    const brand = query.brand || query.brandName || query.brand_name;
 
     const where: any = {
       order_item: { order: { deleted_at: null } },
       ...(status ? { status } : {}),
+      ...(periodId ? { period_id: Number(periodId) } : {}),
+      ...(brand
+        ? {
+            OR: [
+              { brand_name: { equals: String(brand).trim(), mode: 'insensitive' } },
+              { product: { brand_name: { equals: String(brand).trim(), mode: 'insensitive' } } },
+            ],
+          }
+        : {}),
       ...(search
         ? {
             OR: [

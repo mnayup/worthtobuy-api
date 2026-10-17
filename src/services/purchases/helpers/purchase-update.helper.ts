@@ -106,7 +106,7 @@ export async function updateConsolidatedPurchaseHelper(
           ...commonData,
           status: 'UNAVAILABLE',
           actual_price: 0,
-          price_difference: -Number(row.estimated_price),
+          price_difference: 0,
         },
       });
 
@@ -183,7 +183,7 @@ export async function updateConsolidatedPurchaseHelper(
           quantity: shortageQty,
           estimated_price: (Number(row.estimated_price) * shortageQty) / row.quantity,
           actual_price: 0,
-          price_difference: -(Number(row.estimated_price) * shortageQty) / row.quantity,
+          price_difference: 0,
           status: 'UNAVAILABLE',
           currency_code: 'IDR',
           exchange_rate: 1,

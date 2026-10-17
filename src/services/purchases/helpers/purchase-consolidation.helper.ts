@@ -58,6 +58,12 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
   const totalEstimatedPrice = items.reduce((sum, it) => sum + it.estimated_price, 0);
   const totalActualPrice = items.reduce((sum, it) => sum + it.actual_price, 0);
 
+  // Only count estimated price and difference on bought items
+  const purchasedItems = items.filter((it) => it.status === 'PURCHASED');
+  const boughtEstimatedPrice = purchasedItems.reduce((sum, it) => sum + it.estimated_price, 0);
+  const boughtActualPrice = purchasedItems.reduce((sum, it) => sum + it.actual_price, 0);
+  const priceDifference = boughtActualPrice - boughtEstimatedPrice;
+
   // Group status
   const allPurchased = items.every((it) => it.status === 'PURCHASED');
   const allUnavailable = items.every((it) => it.status === 'UNAVAILABLE');
@@ -104,8 +110,8 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
     estimatedPrice: totalEstimatedPrice,
     actual_price: totalActualPrice,
     actualPrice: totalActualPrice,
-    price_difference: totalActualPrice - totalEstimatedPrice,
-    priceDifference: totalActualPrice - totalEstimatedPrice,
+    price_difference: priceDifference,
+    priceDifference: priceDifference,
     payment_method: primary.payment_method,
     paymentMethod: primary.payment_method,
     receipt_url: primary.receipt_url,
