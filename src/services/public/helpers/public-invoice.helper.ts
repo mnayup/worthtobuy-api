@@ -70,6 +70,27 @@ export async function fetchPublicInvoiceData(
           created_at: true,
         },
       },
+      refunds: {
+        where: { deleted_at: null },
+        orderBy: [{ refunded_at: 'desc' }, { created_at: 'desc' }],
+        select: {
+          id: true,
+          refund_number: true,
+          amount: true,
+          refund_type: true,
+          reason: true,
+          status: true,
+          source: true,
+          refunded_at: true,
+          bank_name: true,
+          account_number: true,
+          account_holder: true,
+          proof_url: true,
+          transfer_notes: true,
+          notes: true,
+          created_at: true,
+        },
+      },
     },
   });
 

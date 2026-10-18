@@ -35,9 +35,14 @@ export class PermissionsGuard implements CanActivate {
     }
 
     // Check if user satisfies the required permissions
-    // Every required permission must be matched by an exact key, a module wildcard (e.g. 'products:*'), or '*'
-    const hasAll = requiredPermissions.every((required) => {
-      if (userPerms.includes(required)) return true;
+    // At least one of the required permission keys must be satisfied
+    const hasAny = requiredPermissions.some((required) => {
+      // Support legacy aliases or alternatives e.g. 'refunds:request' also matches 'refunds:create'
+      const alternatives = [required];
+      if (required === 'refunds:request') alternatives.push('refunds:create');
+      if (required === 'refunds:execute') alternatives.push('refunds:approve');
+
+      if (alternatives.some((alt) => userPerms.includes(alt))) return true;
 
       const [mod] = required.split(':');
       if (mod && userPerms.includes(`${mod}:*`)) {
@@ -47,7 +52,7 @@ export class PermissionsGuard implements CanActivate {
       return false;
     });
 
-    if (!hasAll) {
+    if (!hasAny) {
       throw new ForbiddenException(
         `Akses ditolak: akun Anda tidak memiliki izin [${requiredPermissions.join(', ')}] untuk tindakan ini.`
       );

@@ -100,7 +100,7 @@ export class ReportsService {
     const [purchases, expenses, allRefunds] = await Promise.all([
       orderIds.length
         ? this.prisma.purchase.findMany({
-            where: { order_item: { order_id: { in: orderIds } } },
+            where: { order_item: { order_id: { in: orderIds }, order: { deleted_at: null } } },
             include: { order_item: { select: { target_price_idr: true, quantity: true } } },
           })
         : Promise.resolve([]),

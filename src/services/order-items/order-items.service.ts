@@ -170,6 +170,7 @@ export class OrderItemsService {
         fulfillment_status: 'KEPT',
         order: {
           deleted_at: null,
+          customer: { deleted_at: null },
           outstanding_amount: { lte: 0 },
         },
       },

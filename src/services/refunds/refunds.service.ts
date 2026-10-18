@@ -46,6 +46,26 @@ function cleanRefundData(body: any): any {
   if (body.notes !== undefined) {
     cleaned.notes = body.notes ? String(body.notes).trim() : null;
   }
+  if (body.bank_name !== undefined || body.bankName !== undefined) {
+    const val = body.bank_name !== undefined ? body.bank_name : body.bankName;
+    cleaned.bank_name = val ? String(val).trim() : null;
+  }
+  if (body.account_number !== undefined || body.accountNumber !== undefined) {
+    const val = body.account_number !== undefined ? body.account_number : body.accountNumber;
+    cleaned.account_number = val ? String(val).trim() : null;
+  }
+  if (body.account_holder !== undefined || body.accountHolder !== undefined) {
+    const val = body.account_holder !== undefined ? body.account_holder : body.accountHolder;
+    cleaned.account_holder = val ? String(val).trim() : null;
+  }
+  if (body.proof_url !== undefined || body.proofUrl !== undefined) {
+    const val = body.proof_url !== undefined ? body.proof_url : body.proofUrl;
+    cleaned.proof_url = val ? String(val).trim() : null;
+  }
+  if (body.transfer_notes !== undefined || body.transferNotes !== undefined) {
+    const val = body.transfer_notes !== undefined ? body.transfer_notes : body.transferNotes;
+    cleaned.transfer_notes = val ? String(val).trim() : null;
+  }
 
   return cleaned;
 }
@@ -96,12 +116,9 @@ export class RefundsService {
       ],
     };
 
-    const [data, total] = await Promise.all([
+    const [rawRows, total] = await Promise.all([
       this.prisma.refund.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { created_at: 'desc' },
         include: {
           order: { include: { customer: true } },
           invoice: { include: { customer: true } },
@@ -110,6 +127,24 @@ export class RefundsService {
       }),
       this.prisma.refund.count({ where }),
     ]);
+
+    // Sequence based on status priority: REQUESTED (1) -> ON_PROCESS/APPROVED (2) -> PAID (3) -> REJECTED (4), then newest created_at
+    const statusPriority: Record<string, number> = {
+      REQUESTED: 1,
+      ON_PROCESS: 2,
+      APPROVED: 2,
+      PAID: 3,
+      REJECTED: 4,
+    };
+
+    const sorted = [...rawRows].sort((a, b) => {
+      const pA = statusPriority[a.status] || 99;
+      const pB = statusPriority[b.status] || 99;
+      if (pA !== pB) return pA - pB;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+    const data = sorted.slice(skip, skip + limit);
 
     return { data, total, page, limit };
   }
@@ -192,6 +227,10 @@ export class RefundsService {
       }
     }
 
+    if (current.auto_generated && !body.is_processing && !body.status && cleaned.amount !== undefined) {
+      throw new BadRequestException('Refund yang dibuat otomatis oleh sistem tidak dapat diubah secara manual.');
+    }
+
     const paidAutoOverpayment = cleaned.status === 'PAID' && current.auto_generated && current.source === 'OVERPAYMENT';
     const data = await this.prisma.refund.update({
       where: { id },
@@ -222,16 +261,50 @@ export class RefundsService {
     return data;
   }
 
-  async processRefund(id: number, body: { refund_type: 'CUSTOMER_DEPOSIT' | 'DIRECT_TRANSFER'; notes?: string; refunded_at?: any }) {
+  async processRefund(id: number, body: {
+    refund_type?: 'CUSTOMER_DEPOSIT' | 'DIRECT_TRANSFER';
+    refundType?: 'CUSTOMER_DEPOSIT' | 'DIRECT_TRANSFER';
+    notes?: string;
+    refunded_at?: any;
+    refundedAt?: any;
+    bank_name?: string;
+    bankName?: string;
+    account_number?: string;
+    accountNumber?: string;
+    account_holder?: string;
+    accountHolder?: string;
+    proof_url?: string;
+    proofUrl?: string;
+    transfer_notes?: string;
+    transferNotes?: string;
+  }) {
+    const current = await this.prisma.refund.findUniqueOrThrow({ where: { id } });
+    const refund_type = body.refund_type || body.refundType || current.refund_type || 'DIRECT_TRANSFER';
+    const proof_url = body.proof_url ?? body.proofUrl ?? current.proof_url;
+
+    if (refund_type === 'DIRECT_TRANSFER' && !proof_url) {
+      throw new BadRequestException('Bukti transfer wajib diunggah untuk transfer balik rekening.');
+    }
+
     return this.update(id, {
       status: 'PAID',
-      refund_type: body.refund_type,
+      refund_type,
       notes: body.notes,
-      refunded_at: body.refunded_at || new Date(),
+      refunded_at: body.refunded_at || body.refundedAt || new Date(),
+      bank_name: body.bank_name ?? body.bankName,
+      account_number: body.account_number ?? body.accountNumber,
+      account_holder: body.account_holder ?? body.accountHolder,
+      proof_url,
+      transfer_notes: body.transfer_notes ?? body.transferNotes,
     });
   }
 
   async remove(id: number, user_id?: number) {
+    const current = await this.prisma.refund.findUniqueOrThrow({ where: { id } });
+    if (current.auto_generated) {
+      throw new BadRequestException('Refund yang dibuat otomatis oleh sistem tidak dapat dihapus.');
+    }
+
     const data = await this.prisma.refund.update({
       where: { id },
       data: { deleted_at: new Date(), deleted_by_id: user_id },

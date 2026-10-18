@@ -23,6 +23,9 @@ export async function findPublicTargetOrder(prisma: PrismaService, clean: string
         },
       },
       payments: true,
+      refunds: {
+        where: { deleted_at: null },
+      },
     },
   });
 
@@ -46,7 +49,10 @@ export async function findPublicTargetOrder(prisma: PrismaService, clean: string
         invoice_links: {
           include: {
             invoice: {
-              include: { payments: true },
+              include: {
+                payments: true,
+                refunds: { where: { deleted_at: null } },
+              },
             },
           },
         },
@@ -74,7 +80,10 @@ export async function findPublicTargetOrder(prisma: PrismaService, clean: string
             invoice_links: {
               include: {
                 invoice: {
-                  include: { payments: true },
+                  include: {
+                    payments: true,
+                    refunds: { where: { deleted_at: null } },
+                  },
                 },
               },
             },
@@ -271,6 +280,21 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
           total_bill: invoice.total_bill,
           paid_amount: invoice.paid_amount,
           outstanding_amount: invoice.outstanding_amount,
+          refunds: (invoice.refunds || []).map((r: any) => ({
+            id: r.id,
+            refund_number: r.refund_number,
+            amount: r.amount,
+            refund_type: r.refund_type,
+            reason: r.reason,
+            status: r.status,
+            refunded_at: r.refunded_at,
+            bank_name: r.bank_name,
+            account_number: r.account_number,
+            account_holder: r.account_holder,
+            proof_url: r.proof_url,
+            transfer_notes: r.transfer_notes,
+            notes: r.notes,
+          })),
         }
       : null,
     shipment: latestShipment

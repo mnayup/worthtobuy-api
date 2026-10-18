@@ -80,7 +80,12 @@ export class ShipmentsService {
   }
 
   async getSummary() {
-    const shipments = await this.prisma.shipment.findMany({ select: { status: true } });
+    const shipments = await this.prisma.shipment.findMany({
+      where: {
+        order: { deleted_at: null },
+      },
+      select: { status: true },
+    });
     const summary: Record<string, number> = {
       TOTAL: shipments.length,
       WAITING_PACKING: 0,

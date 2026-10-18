@@ -80,6 +80,7 @@ enum ShipmentStatus {
 
 enum RefundStatus {
   REQUESTED
+  ON_PROCESS
   APPROVED
   PAID
   REJECTED
@@ -547,6 +548,11 @@ model refund {
   auto_generated Boolean      @default(false)
   refunded_at    DateTime?
   notes          String?
+  bank_name      String?
+  account_number String?
+  account_holder String?
+  proof_url      String?      @db.Text
+  transfer_notes String?
   created_at     DateTime     @default(now())
   updated_at     DateTime     @updatedAt
   deleted_at     DateTime?

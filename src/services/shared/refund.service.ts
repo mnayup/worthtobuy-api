@@ -19,6 +19,15 @@ export class RefundService {
     }
     if (existing?.status === 'PAID') {
       await this.prisma.refund.update({ where: { id: existing.id }, data: { source_key: null } });
+    } else if (existing) {
+      return this.prisma.refund.update({
+        where: { id: existing.id },
+        data: {
+          amount,
+          reason: 'Kelebihan pembayaran terdeteksi otomatis.',
+          invoice_id,
+        },
+      });
     }
     return this.prisma.refund.upsert({
       where: { source_key },
@@ -27,9 +36,6 @@ export class RefundService {
         reason: 'Kelebihan pembayaran terdeteksi otomatis.',
         invoice_id,
         source: 'OVERPAYMENT',
-        auto_generated: true,
-        status: 'REQUESTED',
-        refunded_at: null,
       },
       create: {
         refund_number: sequence('REF-AUTO'),
@@ -82,6 +88,17 @@ export class RefundService {
     if (existing?.status === 'PAID') return existing;
     const invoice_id = item.order.invoice_links[0]?.invoice_id;
     const label = item.product?.name || item.manual_product_name || `Item #${item.id}`;
+    if (existing) {
+      return this.prisma.refund.update({
+        where: { id: existing.id },
+        data: {
+          amount,
+          order_id: item.order_id,
+          invoice_id,
+          reason: `Barang tidak dapat: ${label}.`,
+        },
+      });
+    }
     const refund = await this.prisma.refund.upsert({
       where: { source_key },
       update: {
@@ -90,9 +107,6 @@ export class RefundService {
         invoice_id,
         reason: `Barang tidak dapat: ${label}.`,
         source: 'UNAVAILABLE_ITEM',
-        auto_generated: true,
-        status: 'REQUESTED',
-        refunded_at: null,
       },
       create: {
         refund_number: sequence('REF-AUTO'),
@@ -130,15 +144,26 @@ export class RefundService {
         },
       });
     }
-    if (existing?.status === 'PAID') {
-      await this.prisma.refund.update({ where: { id: existing.id }, data: { source_key: null } });
-    }
-
     const order = await this.prisma.order.findUnique({
       where: { id: order_id },
       include: { invoice_links: true },
     });
     const invoice_id = order?.invoice_links?.[0]?.invoice_id || null;
+
+    if (existing?.status === 'PAID') {
+      await this.prisma.refund.update({ where: { id: existing.id }, data: { source_key: null } });
+    } else if (existing) {
+      return this.prisma.refund.update({
+        where: { id: existing.id },
+        data: {
+          amount,
+          reason: 'Kelebihan ongkir pengiriman terdeteksi otomatis.',
+          order_id,
+          invoice_id,
+          customer_id: order?.customer_id || null,
+        },
+      });
+    }
 
     const refund = await this.prisma.refund.upsert({
       where: { source_key },
@@ -149,9 +174,6 @@ export class RefundService {
         invoice_id,
         customer_id: order?.customer_id || null,
         source: 'SHIPPING_OVERPAYMENT',
-        auto_generated: true,
-        status: 'REQUESTED',
-        refunded_at: null,
       },
       create: {
         refund_number: sequence('REF-ONGKIR'),

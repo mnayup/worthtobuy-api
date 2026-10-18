@@ -70,7 +70,7 @@ export class InvoiceCalcService {
       }),
       this.prisma.refund.findMany({ where: { invoice_id, source: 'OVERPAYMENT', status: 'PAID' } }),
       this.prisma.refund.count({
-        where: { invoice_id, source: 'UNAVAILABLE_ITEM', status: { in: ['REQUESTED', 'APPROVED'] } },
+        where: { invoice_id, source: 'UNAVAILABLE_ITEM', status: { in: ['REQUESTED', 'ON_PROCESS', 'APPROVED'] } },
       }),
     ]);
 

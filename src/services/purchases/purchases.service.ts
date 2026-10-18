@@ -135,6 +135,9 @@ export class PurchasesService {
 
   async getSummary() {
     const raw = await this.prisma.purchase.findMany({
+      where: {
+        order_item: { order: { deleted_at: null } },
+      },
       select: { purchase_number: true, status: true, period_id: true },
     });
     const map = new Map<string, string[]>();
