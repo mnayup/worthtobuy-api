@@ -15,7 +15,7 @@ export class SettingsController {
   }
 
   @Put(':key')
-  @Roles('OWNER')
+  @Roles('OWNER', 'ADMIN', 'FINANCE', 'STAFF', 'OPERATOR')
   async updateKey(@Param('key') key: string, @Body('value') value: any) {
     return this.settingsService.updateKey(key, value);
   }

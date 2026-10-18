@@ -23,6 +23,90 @@ export const DEFAULT_INVOICE_CONFIG = {
   footer: 'Thank you for shopping with WORTHTOBUY. Your items are handled with utmost care.',
 };
 
+export const DEFAULT_WHATSAPP_TEMPLATES: Record<string, string> = {
+  BILLING:
+    `📚🌱 *INVOICE WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Terima kasih sudah memesan di WORTHTOBUY! Pesanan ({{eventLabel}}) sudah kami catat.\n\n` +
+    `No. Invoice: {{invoiceNumber}}\n` +
+    `Total tagihan: *{{totalBill}}*{{depositLine}}\n` +
+    `*Sisa yang harus dibayar:* *{{outstandingAmount}}*\n` +
+    `Jatuh tempo: {{dueDate}}\n\n` +
+    `💳 Pembayaran transfer bank.\n` +
+    `Setelah transfer, silakan upload bukti pembayaran lewat link di bawah ya kak.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  DP:
+    `📚🌱 *INVOICE WORTHTOBUY* (DP)\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Terima kasih sudah memesan di WORTHTOBUY! Pesanan ({{eventLabel}}) sudah kami catat.\n\n` +
+    `No. Invoice: {{invoiceNumber}}\n` +
+    `Total pesanan: {{totalBill}}{{depositLine}}\n` +
+    `*Dibayar sekarang (DP): {{dpAmount}}* ({{dpPercent}}%)\n` +
+    `Sisa {{remainingAfterDp}} dilunasi {{settlementNote}}.\n\n` +
+    `💳 Pembayaran transfer bank.\n` +
+    `Setelah transfer DP, mohon kirimkan buktinya via link di bawah ini ya kak.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  SETTLEMENT:
+    `📚🌱 *PELUNASAN — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Kabar baik! Pesanan kakak ({{eventLabel}}) sudah siap, tinggal pelunasan ya.\n\n` +
+    `No. Invoice: {{invoiceNumber}}\n` +
+    `Total pesanan: {{totalBill}}{{depositLine}}\n` +
+    `Sudah dibayar (DP): {{paidAmount}}\n` +
+    `*Sisa yang perlu dilunasi: {{outstandingAmount}}*\n\n` +
+    `💳 Pembayaran transfer bank.\n` +
+    `Setelah transfer, silakan upload bukti pelunasannya ya kak.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  FULL_PAYMENT:
+    `📚🌱 *INVOICE LUNAS — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Pembayaran invoice *{{invoiceNumber}}* sebesar *{{totalBill}}*{{depositLine}} telah kami terima dan dinyatakan *LUNAS*.\n\n` +
+    `Terima kasih banyak sudah mempercayakan pesanan kakak di WORTHTOBUY! 🙏{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  OVERDUE:
+    `📚🌱 *INVOICE WORTHTOBUY* (PENGINGAT)\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Mengingatkan untuk invoice *{{invoiceNumber}}* ({{eventLabel}}).\n\n` +
+    `Total Bill: {{totalBill}}\n` +
+    `Remaining: {{outstandingAmount}}{{depositLine}}\n\n` +
+    `Invoice melewati jatuh tempo ({{dueDate}}).{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  PAYMENT_CONFIRMATION:
+    `📚🌱 *KONFIRMASI PEMBAYARAN — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Mengenai pesanan invoice *{{invoiceNumber}}* ({{eventLabel}}):\n\n` +
+    `Pembayaran *{{paidAmount}}* diverifikasi.{{depositLine}} Sisa: *{{outstandingAmount}}*.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  UNAVAILABLE_ITEM:
+    `📚🌱 *PEMBERITAHUAN BARANG KOSONG — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Mengenai pesanan pada invoice *{{invoiceNumber}}* ({{eventLabel}}):\n\n` +
+    `Item berikut tidak tersedia di event:{{itemLines}}\n\n` +
+    `Hubungi admin untuk opsi refund atau pengganti.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  READY_TO_SHIP:
+    `📚🌱 *PESANAN SIAP KIRIM — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Mengenai pesanan pada invoice *{{invoiceNumber}}* ({{eventLabel}}):\n\n` +
+    `Pesanan selesai dipacking dan siap dikirim:{{itemLines}}{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+  TRACKING:
+    `📚🌱 *INFO PENGIRIMAN & RESI — WORTHTOBUY*\n\n` +
+    `Halo kak {{customerName}},\n` +
+    `Mengenai pesanan pada invoice *{{invoiceNumber}}* ({{eventLabel}}):\n\n` +
+    `Pesanan diserahkan ke kurir{{shipmentInfo}}.{{linkSection}}\n\n` +
+    `Salam hangat,\n` +
+    `Tim WORTHTOBUY`,
+};
+
 @Injectable()
 export class SettingsService {
   constructor(private prisma: PrismaService) { }
@@ -73,10 +157,16 @@ export class SettingsService {
             '',
         };
 
+    const whatsappTemplatesData = {
+      ...DEFAULT_WHATSAPP_TEMPLATES,
+      ...((map['whatsapp_templates'] as Record<string, string>) || {}),
+    };
+
     return {
       ...map,
       brand: brandData,
       invoice: invoiceData,
+      whatsapp_templates: whatsappTemplatesData,
     };
   }
 
