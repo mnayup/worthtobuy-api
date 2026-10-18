@@ -14,6 +14,10 @@ export function cleanShipmentData(body: any): any {
     const val = body.customer_id !== undefined ? body.customer_id : body.customerId;
     if (val !== null && val !== undefined) cleaned.customer_id = Number(val);
   }
+  if (body.shipping_counter_id !== undefined || body.shippingCounterId !== undefined) {
+    const val = body.shipping_counter_id !== undefined ? body.shipping_counter_id : body.shippingCounterId;
+    cleaned.shipping_counter_id = val !== null && val !== undefined && val !== '' ? Number(val) : null;
+  }
   if (body.address !== undefined) {
     cleaned.address = String(body.address || '').trim();
   }

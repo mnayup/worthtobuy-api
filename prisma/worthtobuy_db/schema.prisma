@@ -480,6 +480,8 @@ model shipment {
   order                    order          @relation(fields: [order_id], references: [id])
   customer_id              Int
   customer                 customer       @relation(fields: [customer_id], references: [id])
+  shipping_counter_id      Int?
+  shipping_counter         shipping_counter? @relation(fields: [shipping_counter_id], references: [id])
   address                  String
   courier                  String
   service_type             String?
@@ -498,8 +500,33 @@ model shipment {
 
   @@index([order_id])
   @@index([customer_id])
+  @@index([shipping_counter_id])
   @@index([status])
   @@map("shipments")
+}
+
+model shipping_counter {
+  id             Int        @id @default(autoincrement())
+  name           String     // Courier / Expedition Name (e.g. JNE, J&T Express, SiCepat)
+  courier        String?    // Brand / Group (default same as name)
+  code           String?    // Short code (e.g. JNE, JNT)
+  tracking_url   String?    // Web tracking URL template (optional)
+  address        String?
+  city           String?
+  phone          String?
+  contact_person String?
+  is_active      Boolean    @default(true)
+  notes          String?
+  created_at     DateTime   @default(now())
+  updated_at     DateTime   @updatedAt
+  deleted_at     DateTime?
+  deleted_by_id  Int?
+  shipments      shipment[]
+
+  @@index([name])
+  @@index([is_active])
+  @@index([deleted_at])
+  @@map("shipping_counters")
 }
 
 model refund {

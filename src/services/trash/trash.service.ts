@@ -3,7 +3,7 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { UploadsService } from '../uploads/uploads.service';
 
-type EntityType = 'USER' | 'CUSTOMER' | 'PERIOD' | 'PRODUCT' | 'ORDER' | 'PAYMENT' | 'EXPENSE' | 'REFUND' | 'INVOICE';
+type EntityType = 'USER' | 'CUSTOMER' | 'PERIOD' | 'PRODUCT' | 'ORDER' | 'PAYMENT' | 'EXPENSE' | 'REFUND' | 'INVOICE' | 'SHIPPING_COUNTER';
 
 @Injectable()
 export class TrashService {
@@ -24,6 +24,7 @@ export class TrashService {
       EXPENSE: this.prisma.expense,
       REFUND: this.prisma.refund,
       INVOICE: this.prisma.invoice,
+      SHIPPING_COUNTER: this.prisma.shipping_counter,
     };
     return delegates[entity];
   }
@@ -35,7 +36,7 @@ export class TrashService {
     const search = String(query.search || '').trim().toLowerCase().slice(0, 100);
     const requestedType = String(query.type || '').trim().toUpperCase();
 
-    const [users, customers, periods, products, orders, payments, expenses, refunds, invoices] = await Promise.all([
+    const [users, customers, periods, products, orders, payments, expenses, refunds, invoices, shippingCounters] = await Promise.all([
       this.prisma.user.findMany({ where: { deleted_at: { not: null } }, include: { role: true } }),
       this.prisma.customer.findMany({ where: { deleted_at: { not: null } } }),
       this.prisma.jastip_period.findMany({ where: { deleted_at: { not: null } } }),
@@ -45,6 +46,7 @@ export class TrashService {
       this.prisma.expense.findMany({ where: { deleted_at: { not: null } }, include: { period: true } }),
       this.prisma.refund.findMany({ where: { deleted_at: { not: null } }, include: { invoice: true, order: true } }),
       this.prisma.invoice.findMany({ where: { deleted_at: { not: null } }, include: { customer: true } }),
+      this.prisma.shipping_counter.findMany({ where: { deleted_at: { not: null } } }),
     ]);
 
     const all = [
@@ -57,6 +59,7 @@ export class TrashService {
       ...expenses.map((x: any) => ({ entityType: 'EXPENSE', id: x.id, code: x.expense_number, name: `${x.category} • Rp${Number(x.amount_idr).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
       ...refunds.map((x: any) => ({ entityType: 'REFUND', id: x.id, code: x.refund_number, name: `${x.invoice?.invoice_number || x.order?.order_number || '-'} • Rp${Number(x.amount).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
       ...invoices.map((x: any) => ({ entityType: 'INVOICE', id: x.id, code: x.invoice_number, name: `${x.customer?.full_name || '-'} • Rp${Number(x.total_bill).toLocaleString('id-ID')}`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
+      ...shippingCounters.map((x: any) => ({ entityType: 'SHIPPING_COUNTER', id: x.id, code: x.code || x.courier, name: `${x.name} (${x.courier})`, deleted_at: x.deleted_at, deleted_by_id: x.deleted_by_id })),
     ].sort((a, b) => new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime());
 
     const userIds = [...new Set(all.map(x => x.deleted_by_id).filter(Boolean))];

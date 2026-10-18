@@ -149,6 +149,7 @@ export class ShipmentsService {
         orderBy: { created_at: 'desc' },
         include: {
           customer: true,
+          shipping_counter: true,
           order: {
             include: {
               items: { include: { product: true } },
@@ -168,6 +169,7 @@ export class ShipmentsService {
       where: { id },
       include: {
         customer: true,
+        shipping_counter: true,
         order: {
           include: {
             items: { include: { product: true } },
