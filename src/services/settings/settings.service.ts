@@ -62,10 +62,15 @@ export class SettingsService {
           accountNumber: invoiceRecord.account_number,
           accountHolder: invoiceRecord.account_holder,
           footer: invoiceRecord.footer || '',
+          qrisImageUrl: invoiceRecord.qris_image_url || '',
         }
       : {
           ...DEFAULT_INVOICE_CONFIG,
           ...((map['invoice'] as Record<string, any>) || {}),
+          qrisImageUrl:
+            ((map['invoice'] as Record<string, any>)?.qrisImageUrl) ||
+            ((map['invoice'] as Record<string, any>)?.qris_image_url) ||
+            '',
         };
 
     return {
@@ -140,6 +145,12 @@ export class SettingsService {
             ? String(value.account_holder)
             : '',
         footer: value.footer !== undefined ? String(value.footer) : '',
+        qris_image_url:
+          value.qrisImageUrl !== undefined
+            ? String(value.qrisImageUrl)
+            : value.qris_image_url !== undefined
+            ? String(value.qris_image_url)
+            : '',
       };
 
       if (existing) {

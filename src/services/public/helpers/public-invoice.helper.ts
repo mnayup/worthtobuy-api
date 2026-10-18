@@ -120,6 +120,13 @@ export async function fetchPublicInvoiceData(
         invoiceSettings.whatsapp ||
         process.env.BRAND_WHATSAPP ||
         '6285186852535',
+      qrisImageUrl:
+        (invoiceRecord as any)?.qris_image_url ||
+        invoiceSettings.qrisImageUrl ||
+        invoiceSettings.qrisImage ||
+        brandSettings.qrisImageUrl ||
+        process.env.DEFAULT_QRIS_IMAGE_URL ||
+        '',
     },
   };
 }
@@ -152,6 +159,9 @@ export async function createPublicPaymentProof(
     throw new BadRequestException('Tagihan invoice ini sudah lunas.');
   }
 
+  const method = String(body.method || 'Bank Transfer').trim();
+  const isQrisPayment = method.toUpperCase().includes('QRIS');
+
   const pendingPayment = await prisma.payment.findFirst({
     where: {
       deleted_at: null,
@@ -160,9 +170,14 @@ export async function createPublicPaymentProof(
     },
   });
   if (pendingPayment) {
-    throw new BadRequestException(
-      'Bukti transfer sebelumnya sedang diverifikasi oleh admin. Harap menunggu.',
-    );
+    const isPendingQris = (pendingPayment.method || '').toUpperCase().includes('QRIS');
+    // If not QRIS (e.g. bank transfer) and the incoming payment is also not QRIS, block.
+    // If QRIS is used, customer can multiple submit their payments/installments.
+    if (!isQrisPayment && !isPendingQris) {
+      throw new BadRequestException(
+        'Bukti transfer sebelumnya sedang diverifikasi oleh admin. Harap menunggu.',
+      );
+    }
   }
 
   const isPaidSome = Number(invoice.paid_amount) > 0;
@@ -216,7 +231,6 @@ export async function createPublicPaymentProof(
     throw new BadRequestException('Bukti transfer ini sudah pernah diunggah sebelumnya.');
   }
 
-  const method = String(body.method || 'Bank Transfer').trim();
   const destination_account = body.destination_account
     ? String(body.destination_account).trim()
     : null;

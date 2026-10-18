@@ -701,6 +701,7 @@ model invoice_setting {
   account_number String?
   account_holder String?
   footer         String?
+  qris_image_url String?  @db.Text
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 
