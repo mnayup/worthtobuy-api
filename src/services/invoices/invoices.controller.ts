@@ -25,6 +25,11 @@ export class InvoicesController {
     return this.invoicesService.getAvailableOrders(query);
   }
 
+  @Get('unpacked-invoices')
+  async getUnpackedInvoices(@Query('customerId') customerId: string) {
+    return this.invoicesService.getUnpackedInvoiceOptions(Number(customerId));
+  }
+
   @Get()
   async findAll(@Query() query: any) {
     return this.invoicesService.findAll(query);

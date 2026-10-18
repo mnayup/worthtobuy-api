@@ -69,6 +69,89 @@ export class InvoicesService {
     });
   }
 
+  async getUnpackedInvoiceOptions(customerId: number) {
+    if (!customerId) return [];
+
+    // Find active (non-deleted) invoices for this customer
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customer_id: customerId,
+        deleted_at: null,
+      },
+      include: {
+        orders: {
+          include: {
+            order: {
+              include: {
+                shipments: true,
+                items: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { invoice_date: 'desc' },
+    });
+
+    const eligibleInvoices: any[] = [];
+
+    for (const inv of invoices) {
+      if (!inv.orders || inv.orders.length === 0) continue;
+
+      let isPackedOrBeyond = false;
+      let hasKeepItems = false;
+
+      for (const link of inv.orders) {
+        const order = link.order;
+        if (!order) continue;
+
+        // Check if shipment is packed or beyond
+        if (order.shipments && order.shipments.length > 0) {
+          for (const s of order.shipments) {
+            if (['PACKED', 'READY', 'HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(s.status) || s.packed_at) {
+              isPackedOrBeyond = true;
+              break;
+            }
+          }
+        }
+
+        // Check if order status is already shipped or completed
+        if (['SHIPPED', 'COMPLETED'].includes(order.status)) {
+          isPackedOrBeyond = true;
+        }
+
+        // Check if any order item has keep / titip (kept_until set or fulfillment_status === 'KEPT')
+        if (order.items && order.items.length > 0) {
+          for (const item of order.items) {
+            if (item.kept_until || item.fulfillment_status === 'KEPT') {
+              hasKeepItems = true;
+              break;
+            }
+          }
+        }
+
+        if (isPackedOrBeyond || hasKeepItems) break;
+      }
+
+      // If already packed, cannot add new order into it.
+      // If previous invoice items are keep / titip, mandatory to create new invoice (different batas waktu titip).
+      if (!isPackedOrBeyond && !hasKeepItems) {
+        eligibleInvoices.push({
+          id: inv.id,
+          invoice_number: inv.invoice_number,
+          invoice_date: inv.invoice_date,
+          status: inv.status,
+          total_bill: Number(inv.total_bill),
+          outstanding_amount: Number(inv.outstanding_amount),
+          order_count: inv.orders.length,
+          order_numbers: inv.orders.map((o) => o.order.order_number).join(', '),
+        });
+      }
+    }
+
+    return eligibleInvoices;
+  }
+
   async findOne(id: number) {
     const data = await this.prisma.invoice.findFirstOrThrow({
       where: { id, deleted_at: null },
@@ -259,60 +342,120 @@ export class InvoicesService {
     const createdInvoices: any[] = [];
     const today = new Date();
 
+    const useExistingInvoice = Boolean(body.use_existing_invoice ?? body.useExistingInvoice);
+    const customerInvoiceMap = body.customer_invoice_map ?? body.customerInvoiceMap ?? {};
+
     for (const [customerId, custOrders] of customerOrderGroups.entries()) {
       const total_bill = custOrders.reduce((sum, o) => sum + Number(o.total_bill || 0), 0);
       const dp_amount = billingModel === 'DP' && dpPercent ? Math.round((total_bill * dpPercent) / 100) : null;
       const legacyInvoiceIds = extractLegacyInvoiceIds(custOrders);
-      const invoiceNumber = sequence('WTB-INV');
 
-      const inv = await this.prisma.$transaction(async (tx) => {
-        if (legacyInvoiceIds.length) {
-          await tx.invoice_order.deleteMany({ where: { invoice_id: { in: legacyInvoiceIds } } });
-          await tx.invoice.deleteMany({
-            where: { id: { in: legacyInvoiceIds }, payments: { none: {} }, refunds: { none: {} } },
-          });
+      // Check if user chose to use an existing invoice for this customer or overall
+      const requestedInvId = customerInvoiceMap[customerId] ? Number(customerInvoiceMap[customerId]) : null;
+      let targetExistingInvoice: any = null;
+
+      if (useExistingInvoice || requestedInvId) {
+        // Query unpacked invoices for this customer that do NOT have packed items and do NOT have keep items
+        const eligibleInvoices = await this.getUnpackedInvoiceOptions(customerId);
+        if (requestedInvId) {
+          targetExistingInvoice = eligibleInvoices.find((inv) => inv.id === requestedInvId);
+        } else if (useExistingInvoice && eligibleInvoices.length > 0) {
+          targetExistingInvoice = eligibleInvoices[0];
         }
+        // Note: If previous order is on keep, eligibleInvoices will be empty for that invoice,
+        // so targetExistingInvoice remains null and a new invoice is created as required!
+      }
 
-        return tx.invoice.create({
-          data: {
-            invoice_number: invoiceNumber,
-            customer_id: customerId,
-            invoice_date: today,
-            due_date: today,
-            total_bill,
-            deposit_amount: 0,
-            use_deposit: false,
-            outstanding_amount: total_bill,
-            notes: null,
-            billing_model: billingModel,
-            dp_percent: dpPercent,
-            dp_amount: dp_amount,
-            dp_settlement_note: billingModel === 'DP' ? 'when products are ready to ship' : null,
-            orders: {
-              create: custOrders.map((o) => ({
+      if (targetExistingInvoice) {
+        // Append orders into existing unpacked invoice
+        const invId = targetExistingInvoice.id;
+        await this.prisma.$transaction(async (tx) => {
+          if (legacyInvoiceIds.length) {
+            await tx.invoice_order.deleteMany({ where: { invoice_id: { in: legacyInvoiceIds } } });
+            await tx.invoice.deleteMany({
+              where: { id: { in: legacyInvoiceIds }, payments: { none: {} }, refunds: { none: {} } },
+            });
+          }
+
+          // Create invoice_order link for each order
+          for (const o of custOrders) {
+            await tx.invoice_order.create({
+              data: {
+                invoice_id: invId,
                 order_id: o.id,
                 snapshot_amount: o.total_bill,
-              })),
-            },
-          },
-          include: {
-            customer: true,
-            orders: { include: { order: true } },
+              },
+            });
+          }
+        });
+
+        await this.invoiceCalcService.refreshInvoicePayment(invId);
+        await this.prisma.notification.create({
+          data: {
+            type: 'ORDER',
+            title: 'Pesanan ditambahkan ke invoice yang sudah ada (Bulk)',
+            message: `${targetExistingInvoice.invoice_number} ditambahkan ${custOrders.length} pesanan baru.`,
+            link: `/invoices/${invId}`,
           },
         });
-      });
 
-      await this.invoiceCalcService.refreshInvoicePayment(inv.id);
-      await this.prisma.notification.create({
-        data: {
-          type: 'ORDER',
-          title: 'Invoice baru dibuat (Bulk)',
-          message: `${inv.invoice_number} memuat ${custOrders.length} pesanan dari ${inv.customer.full_name}.`,
-          link: `/invoices/${inv.id}`,
-        },
-      });
+        createdInvoices.push({
+          id: invId,
+          invoice_number: targetExistingInvoice.invoice_number,
+          appended: true,
+        });
+      } else {
+        // Create new invoice
+        const invoiceNumber = sequence('WTB-INV');
+        const inv = await this.prisma.$transaction(async (tx) => {
+          if (legacyInvoiceIds.length) {
+            await tx.invoice_order.deleteMany({ where: { invoice_id: { in: legacyInvoiceIds } } });
+            await tx.invoice.deleteMany({
+              where: { id: { in: legacyInvoiceIds }, payments: { none: {} }, refunds: { none: {} } },
+            });
+          }
 
-      createdInvoices.push(inv);
+          return tx.invoice.create({
+            data: {
+              invoice_number: invoiceNumber,
+              customer_id: customerId,
+              invoice_date: today,
+              due_date: today,
+              total_bill,
+              deposit_amount: 0,
+              use_deposit: false,
+              outstanding_amount: total_bill,
+              notes: null,
+              billing_model: billingModel,
+              dp_percent: dpPercent,
+              dp_amount: dp_amount,
+              dp_settlement_note: billingModel === 'DP' ? 'when products are ready to ship' : null,
+              orders: {
+                create: custOrders.map((o) => ({
+                  order_id: o.id,
+                  snapshot_amount: o.total_bill,
+                })),
+              },
+            },
+            include: {
+              customer: true,
+              orders: { include: { order: true } },
+            },
+          });
+        });
+
+        await this.invoiceCalcService.refreshInvoicePayment(inv.id);
+        await this.prisma.notification.create({
+          data: {
+            type: 'ORDER',
+            title: 'Invoice baru dibuat (Bulk)',
+            message: `${inv.invoice_number} memuat ${custOrders.length} pesanan dari ${inv.customer.full_name}.`,
+            link: `/invoices/${inv.id}`,
+          },
+        });
+
+        createdInvoices.push(inv);
+      }
     }
 
     return {
@@ -333,8 +476,29 @@ export class InvoicesService {
     const selectedOrderIds = body.order_ids ?? body.orderIds ?? current.orders.map((link) => link.order_id);
     const hasOrderChange = body.order_ids !== undefined || body.orderIds !== undefined || body.customer_id !== undefined || body.customerId !== undefined;
 
-    if (hasOrderChange && (current.payments.length || current.refunds.some((r) => r.status !== 'REJECTED'))) {
-      throw new BadRequestException('Komposisi pesanan atau pelanggan tidak dapat diubah setelah invoice memiliki histori transaksi.');
+    if (hasOrderChange) {
+      // Check if invoice or any order is already packed
+      const invoiceShipments = await this.prisma.shipment.findMany({
+        where: { order_id: { in: current.orders.map((o) => o.order_id) } },
+      });
+      const isPacked = invoiceShipments.some((s) =>
+        ['PACKED', 'READY', 'HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(s.status) || Boolean(s.packed_at)
+      );
+      if (isPacked) {
+        throw new BadRequestException('Pesanan tidak dapat diubah atau ditambahkan karena invoice / pesanan sudah dalam proses packing atau pengiriman.');
+      }
+
+      // Customer change is never allowed once transactions exist
+      if (customer_id !== current.customer_id && (current.payments.length || current.refunds.some((r) => r.status !== 'REJECTED'))) {
+        throw new BadRequestException('Pelanggan tidak dapat diubah setelah invoice memiliki histori transaksi.');
+      }
+
+      // Removal of existing orders is not allowed once transactions exist, but appending new orders is permitted!
+      const currentOrderIds = new Set(current.orders.map((l) => l.order_id));
+      const removedOrders = Array.from(currentOrderIds).filter((id) => !selectedOrderIds.includes(id));
+      if (removedOrders.length > 0 && (current.payments.length || current.refunds.some((r) => r.status !== 'REJECTED'))) {
+        throw new BadRequestException('Pesanan yang sudah memiliki transaksi pembayaran tidak dapat dihapus dari invoice.');
+      }
     }
 
     const rawUseDeposit = body.use_deposit !== undefined ? body.use_deposit : body.useDeposit;

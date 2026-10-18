@@ -220,6 +220,11 @@ export class PaymentsService {
   async update(id: number, body: any, user_id?: number) {
     const current = await this.prisma.payment.findUniqueOrThrow({ where: { id } });
     const cleaned = cleanPaymentData(body);
+
+    if (current.status === 'VERIFIED' && cleaned.status && cleaned.status !== 'VERIFIED') {
+      throw new BadRequestException('Pembayaran yang sudah berstatus VERIFIED tidak dapat diubah statusnya menjadi ditolak atau pending.');
+    }
+
     const resolvedOrderId = cleaned.order_id === undefined ? current.order_id : cleaned.order_id || null;
     const resolvedInvoiceId = cleaned.invoice_id === undefined ? current.invoice_id : cleaned.invoice_id || null;
 

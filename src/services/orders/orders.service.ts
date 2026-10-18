@@ -175,6 +175,25 @@ export class OrdersService {
       });
     });
 
+    // If an existing unpacked invoice was selected, attach this order to it
+    const targetInvoiceId = body.target_invoice_id || body.targetInvoiceId;
+    if (targetInvoiceId) {
+      const invId = Number(targetInvoiceId);
+      const existingInv = await this.prisma.invoice.findFirst({
+        where: { id: invId, customer_id: data.customer_id, deleted_at: null },
+      });
+      if (existingInv) {
+        await this.prisma.invoice_order.create({
+          data: {
+            invoice_id: invId,
+            order_id: data.id,
+            snapshot_amount: data.total_bill,
+          },
+        });
+        await this.invoiceCalcService.refreshInvoicePayment(invId);
+      }
+    }
+
     await this.prisma.notification.create({
       data: {
         type: 'ORDER',
