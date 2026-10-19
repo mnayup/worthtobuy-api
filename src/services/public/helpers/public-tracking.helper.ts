@@ -72,6 +72,73 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
     ? latestShipment?.updated_at || targetOrder.updated_at
     : null;
 
+  // Resolve logical chronological dates for venue hunting & warehouse arrival
+  const isReadyStock = period?.code === 'READY-STOCK';
+  const orderCreated = new Date(targetOrder.created_at);
+  const packingDateTime = packingDate ? new Date(packingDate) : null;
+  const now = new Date();
+
+  // Find latest purchase date across order items if available
+  let latestPurchaseDate: Date | null = null;
+  for (const item of targetOrder.items || []) {
+    const pDate = item.purchases?.[0]?.purchase_date;
+    if (pDate) {
+      const parsed = new Date(pDate);
+      if (!latestPurchaseDate || parsed > latestPurchaseDate) {
+        latestPurchaseDate = parsed;
+      }
+    }
+  }
+
+  // When order was sorted into shipment (waiting packing)
+  const sortingDate = latestShipment?.created_at
+    ? new Date(latestShipment.created_at)
+    : null;
+
+  // Step 3 (Hunting di Venue)
+  let huntingDate: Date | null = null;
+  if (currentStepIndex >= 3) {
+    if (isReadyStock) {
+      huntingDate = orderCreated;
+    } else if (period?.departure_at) {
+      huntingDate = new Date(period.departure_at);
+      if (latestPurchaseDate && huntingDate > latestPurchaseDate) {
+        huntingDate = latestPurchaseDate;
+      } else if (packingDateTime && huntingDate > packingDateTime) {
+        huntingDate = packingDateTime;
+      }
+    } else {
+      huntingDate = orderCreated;
+    }
+  }
+
+  // Step 4 (Tiba di Hub Warehouse & QC - setelah dibeli & disortir per customer)
+  let hubArrivalDate: Date | null = null;
+  if (currentStepIndex >= 4) {
+    if (isReadyStock) {
+      hubArrivalDate = sortingDate || orderCreated;
+    } else {
+      // 1. Prioritize actual sorting date (when shipment was created for packing)
+      // 2. Next prioritize purchase date when shopper bought the items
+      // 3. Fallback to period return_at or order updated timestamp
+      const candidateArrival =
+        sortingDate ||
+        latestPurchaseDate ||
+        (period?.return_at ? new Date(period.return_at) : null) ||
+        (targetOrder.updated_at ? new Date(targetOrder.updated_at) : null) ||
+        orderCreated;
+
+      // Chronological guard: Arrival at hub cannot be after packing date or now
+      if (packingDateTime && candidateArrival > packingDateTime) {
+        hubArrivalDate = packingDateTime;
+      } else if (candidateArrival > now) {
+        hubArrivalDate = now;
+      } else {
+        hubArrivalDate = candidateArrival;
+      }
+    }
+  }
+
   const timeline = [
     {
       step: 1,
@@ -95,9 +162,11 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
     {
       step: 3,
       title: 'Hunting di Venue / Event',
-      desc: `Shopper sedang mencarikan pesanan Anda di ` +
-        `${period?.name || 'event'}.`,
-      date: currentStepIndex >= 3 ? period?.departure_at || null : null,
+      desc: isReadyStock
+        ? 'Pesanan diproses dari stok warehouse Worthtobuy.'
+        : `Shopper sedang mencarikan pesanan Anda di ` +
+          `${period?.name || 'event'}.`,
+      date: currentStepIndex >= 3 ? huntingDate : null,
       isCompleted: currentStepIndex >= 3,
       isCurrent: currentStepIndex === 3,
     },
@@ -106,7 +175,7 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
       title: 'Tiba di Hub Warehouse & QC',
       desc: 'Barang belanjaan tiba di HQ, pengecekan kondisi fisik ' +
         '& kelengkapan.',
-      date: currentStepIndex >= 4 ? period?.return_at || null : null,
+      date: currentStepIndex >= 4 ? hubArrivalDate : null,
       isCompleted: currentStepIndex >= 4,
       isCurrent: currentStepIndex === 4,
     },

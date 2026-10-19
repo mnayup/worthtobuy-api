@@ -18,7 +18,16 @@ export async function findPublicTargetOrder(
           order: {
             include: {
               period: true,
-              items: { include: { product: true } },
+              items: {
+                include: {
+                  product: true,
+                  purchases: {
+                    where: { status: 'PURCHASED' },
+                    orderBy: { purchase_date: 'desc' },
+                    take: 1,
+                  },
+                },
+              },
               shipments: true,
             },
           },
@@ -46,7 +55,16 @@ export async function findPublicTargetOrder(
       include: {
         customer: true,
         period: true,
-        items: { include: { product: true } },
+        items: {
+          include: {
+            product: true,
+            purchases: {
+              where: { status: 'PURCHASED' },
+              orderBy: { purchase_date: 'desc' },
+              take: 1,
+            },
+          },
+        },
         shipments: true,
         invoice_links: {
           include: {
@@ -77,7 +95,16 @@ export async function findPublicTargetOrder(
           include: {
             customer: true,
             period: true,
-            items: { include: { product: true } },
+            items: {
+              include: {
+                product: true,
+                purchases: {
+                  where: { status: 'PURCHASED' },
+                  orderBy: { purchase_date: 'desc' },
+                  take: 1,
+                },
+              },
+            },
             shipments: true,
             invoice_links: {
               include: {
@@ -117,7 +144,16 @@ export async function findPublicTargetOrder(
           include: {
             customer: true,
             period: true,
-            items: { include: { product: true } },
+            items: {
+              include: {
+                product: true,
+                purchases: {
+                  where: { status: 'PURCHASED' },
+                  orderBy: { purchase_date: 'desc' },
+                  take: 1,
+                },
+              },
+            },
             shipments: true,
             invoice_links: {
               include: {
