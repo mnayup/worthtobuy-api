@@ -1,6 +1,6 @@
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../config/prisma/prisma.service';
-import { sequence } from '../../../common/utils/http.utils';
+import { insertPaymentRecord } from './public-payment-submission.helper';
 
 export async function fetchPublicInvoiceData(
   prisma: PrismaService,
@@ -191,12 +191,13 @@ export async function createPublicPaymentProof(
     },
   });
   if (pendingPayment) {
-    const isPendingQris = (pendingPayment.method || '').toUpperCase().includes('QRIS');
-    // If not QRIS (e.g. bank transfer) and the incoming payment is also not QRIS, block.
-    // If QRIS is used, customer can multiple submit their payments/installments.
+    const isPendingQris = (pendingPayment.method || '')
+      .toUpperCase()
+      .includes('QRIS');
     if (!isQrisPayment && !isPendingQris) {
       throw new BadRequestException(
-        'Bukti transfer sebelumnya sedang diverifikasi oleh admin. Harap menunggu.',
+        'Bukti transfer sebelumnya sedang diverifikasi oleh admin. ' +
+        'Harap menunggu.'
       );
     }
   }
@@ -204,23 +205,27 @@ export async function createPublicPaymentProof(
   const isPaidSome = Number(invoice.paid_amount) > 0;
   if (isPaidSome) {
     const isWaitingSettlement = (invoice.orders || []).some(
-      (link) => link.order?.status === 'WAITING_SETTLEMENT',
+      (link) => link.order?.status === 'WAITING_SETTLEMENT'
     );
     if (!isWaitingSettlement) {
       throw new BadRequestException(
-        'Pembayaran DP sudah diterima. Form pelunasan belum dibuka hingga status ' +
-          'pesanan berubah menjadi Menunggu Pelunasan (Waiting for Settlement).',
+        'Pembayaran DP sudah diterima. Form pelunasan belum dibuka ' +
+        'hingga status pesanan berubah menjadi Menunggu Pelunasan.'
       );
     }
   }
 
   const amount = Number(body.amount);
   if (!amount || amount <= 0) {
-    throw new BadRequestException('Nominal pembayaran harus lebih besar dari 0.');
+    throw new BadRequestException(
+      'Nominal pembayaran harus lebih besar dari 0.'
+    );
   }
 
   if (!body.proof_url || !String(body.proof_url).trim()) {
-    throw new BadRequestException('Bukti transfer (gambar/screenshot) wajib diunggah.');
+    throw new BadRequestException(
+      'Bukti transfer (gambar/screenshot) wajib diunggah.'
+    );
   }
 
   const proof_url = String(body.proof_url).trim();
@@ -236,7 +241,7 @@ export async function createPublicPaymentProof(
   });
   if (recentDuplicate) {
     throw new BadRequestException(
-      'Bukti pembayaran baru saja dikirimkan. Harap tunggu konfirmasi.',
+      'Bukti pembayaran baru saja dikirimkan. Harap tunggu konfirmasi.'
     );
   }
 
@@ -249,55 +254,19 @@ export async function createPublicPaymentProof(
     },
   });
   if (sameProof) {
-    throw new BadRequestException('Bukti transfer ini sudah pernah diunggah sebelumnya.');
+    throw new BadRequestException(
+      'Bukti transfer ini sudah pernah diunggah sebelumnya.'
+    );
   }
 
-  const destination_account = body.destination_account
-    ? String(body.destination_account).trim()
-    : null;
-  const payment_date = body.payment_date ? new Date(body.payment_date) : new Date();
-  const notes = body.notes ? String(body.notes).trim() : null;
-
-  const payment = await prisma.payment.create({
-    data: {
-      invoice_id: invoice.id,
-      payment_number: sequence('PAY'),
-      amount,
-      method,
-      destination_account,
-      proof_url,
-      payment_date,
-      notes,
-      status: 'PENDING',
-      verified_by_id: null,
-    },
-  });
-
-  const rawKeepItem = body.keep_item !== undefined ? body.keep_item : body.keepItem;
-  if (rawKeepItem !== undefined) {
-    const isKeep = Boolean(rawKeepItem);
-    const orderIds = (invoice.orders || []).map((link) => link.order_id);
-    if (orderIds.length > 0) {
-      // Set keep date until 1 month after payment submission
-      const kept_until = isKeep ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null;
-      await prisma.order_item.updateMany({
-        where: { order_id: { in: orderIds } },
-        data: { kept_until },
-      });
-    }
-  }
-
-  const customerName = invoice.customer?.full_name || 'Pelanggan';
-  const notifMsg = `${invoice.invoice_number} • ${customerName} mengunggah bukti transfer `
-    + `${method} Rp ${amount.toLocaleString('id-ID')}`;
-  await prisma.notification.create({
-    data: {
-      type: 'PAYMENT',
-      title: 'Bukti transfer baru diunggah pelanggan',
-      message: notifMsg,
-      link: `/invoices/${invoice.id}`,
-    },
-  });
+  const payment = await insertPaymentRecord(
+    prisma,
+    invoice,
+    body,
+    method,
+    amount,
+    proof_url
+  );
 
   return {
     success: true,

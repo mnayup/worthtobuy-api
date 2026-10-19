@@ -1,150 +1,5 @@
-import { NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../../config/prisma/prisma.service';
 import { maskName, maskPhone, maskAddress } from './public-masking.helper';
-
-export async function findPublicTargetOrder(prisma: PrismaService, clean: string) {
-  // 1. Try finding by Invoice number
-  let invoice = await prisma.invoice.findFirst({
-    where: {
-      invoice_number: { equals: clean, mode: 'insensitive' },
-      deleted_at: null,
-    },
-    include: {
-      customer: true,
-      orders: {
-        include: {
-          order: {
-            include: {
-              period: true,
-              items: { include: { product: true } },
-              shipments: true,
-            },
-          },
-        },
-      },
-      payments: true,
-      refunds: {
-        where: { deleted_at: null },
-      },
-    },
-  });
-
-  let targetOrder: any = null;
-  if (invoice && invoice.orders.length > 0) {
-    targetOrder = invoice.orders[0].order;
-  }
-
-  // 2. Try finding by Order number if not found yet
-  if (!targetOrder) {
-    targetOrder = await prisma.order.findFirst({
-      where: {
-        order_number: { equals: clean, mode: 'insensitive' },
-        deleted_at: null,
-      },
-      include: {
-        customer: true,
-        period: true,
-        items: { include: { product: true } },
-        shipments: true,
-        invoice_links: {
-          include: {
-            invoice: {
-              include: {
-                payments: true,
-                refunds: { where: { deleted_at: null } },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (targetOrder?.invoice_links?.length > 0) {
-      invoice = targetOrder.invoice_links[0].invoice;
-    }
-  }
-
-  // 3. Try finding by Shipment tracking_number (Nomor Resi)
-  if (!targetOrder) {
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        tracking_number: { equals: clean, mode: 'insensitive' },
-      },
-      include: {
-        order: {
-          include: {
-            customer: true,
-            period: true,
-            items: { include: { product: true } },
-            shipments: true,
-            invoice_links: {
-              include: {
-                invoice: {
-                  include: {
-                    payments: true,
-                    refunds: { where: { deleted_at: null } },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (shipment?.order) {
-      targetOrder = shipment.order;
-      if (targetOrder?.invoice_links?.length > 0) {
-        invoice = targetOrder.invoice_links[0].invoice;
-      }
-    }
-  }
-
-  // 4. Try finding by customer code if provided (e.g. CUST-001)
-  if (!targetOrder && clean.toUpperCase().startsWith('CUST')) {
-    const customer = await prisma.customer.findFirst({
-      where: {
-        customer_code: { equals: clean, mode: 'insensitive' },
-        deleted_at: null,
-      },
-      include: {
-        orders: {
-          where: { deleted_at: null },
-          orderBy: { created_at: 'desc' },
-          take: 1,
-          include: {
-            customer: true,
-            period: true,
-            items: { include: { product: true } },
-            shipments: true,
-            invoice_links: {
-              include: {
-                invoice: {
-                  include: { payments: true },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (customer && customer.orders.length > 0) {
-      targetOrder = customer.orders[0];
-      if (targetOrder?.invoice_links?.length > 0) {
-        invoice = targetOrder.invoice_links[0].invoice;
-      }
-    }
-  }
-
-  if (!targetOrder) {
-    throw new NotFoundException(
-      `Pesanan dengan nomor "${clean}" tidak ditemukan. Pastikan nomor Invoice (INV-...), nomor Order (ORD-...), atau nomor resi kurir sudah benar.`
-    );
-  }
-
-  return { targetOrder, invoice };
-}
+export { findPublicTargetOrder } from './public-tracking-lookup.helper';
 
 export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
   const customer = targetOrder.customer;
@@ -168,7 +23,11 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
     currentStepIndex = 3;
   } else if (orderStatus === 'PURCHASED' || orderStatus === 'ARRIVED_HUB') {
     currentStepIndex = 4;
-  } else if (orderStatus === 'READY_TO_SHIP' || shipmentStatus === 'PACKED' || shipmentStatus === 'READY') {
+  } else if (
+    orderStatus === 'READY_TO_SHIP' ||
+    shipmentStatus === 'PACKED' ||
+    shipmentStatus === 'READY'
+  ) {
     currentStepIndex = 5;
   } else if (
     orderStatus === 'SHIPPED' ||
@@ -179,6 +38,39 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
   } else if (orderStatus === 'COMPLETED' || shipmentStatus === 'DELIVERED') {
     currentStepIndex = 7;
   }
+
+  const isPacked =
+    Boolean(latestShipment?.packed_at) ||
+    ['PACKED', 'READY', 'HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED']
+      .includes(shipmentStatus) ||
+    orderStatus === 'READY_TO_SHIP';
+
+  const isShipped =
+    Boolean(latestShipment?.shipped_at) ||
+    ['HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(shipmentStatus) ||
+    ['SHIPPED', 'COMPLETED'].includes(orderStatus);
+
+  const isDelivered =
+    shipmentStatus === 'DELIVERED' || orderStatus === 'COMPLETED';
+
+  const packingDate =
+    latestShipment?.packed_at ||
+    (isPacked
+      ? latestShipment?.updated_at || latestShipment?.created_at
+      : null);
+
+  const shippingDate =
+    latestShipment?.shipped_at ||
+    (isShipped ? latestShipment?.updated_at : null);
+
+  const paymentDate =
+    invoice?.payments?.[0]?.payment_date ||
+    invoice?.payments?.[0]?.created_at ||
+    (isPaidOrPartial ? invoice?.updated_at || targetOrder.created_at : null);
+
+  const deliveredDate = isDelivered
+    ? latestShipment?.updated_at || targetOrder.updated_at
+    : null;
 
   const timeline = [
     {
@@ -193,25 +85,28 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
       step: 2,
       title: 'Pembayaran Terverifikasi',
       desc: isPaidOrPartial
-        ? `Pembayaran telah kami terima (${invoice?.status === 'PAID' ? 'LUNAS' : 'DP Diterima'}).`
+        ? `Pembayaran telah kami terima (` +
+          `${invoice?.status === 'PAID' ? 'LUNAS' : 'DP Diterima'}).`
         : 'Menunggu konfirmasi pembayaran DP/Full.',
-      date: invoice?.payments?.[0]?.payment_date || (isPaidOrPartial ? targetOrder.created_at : null),
+      date: isPaidOrPartial ? paymentDate : null,
       isCompleted: currentStepIndex >= 2,
       isCurrent: currentStepIndex === 2,
     },
     {
       step: 3,
       title: 'Hunting di Venue / Event',
-      desc: `Shopper sedang mencarikan pesanan Anda di ${period?.name || 'event'}.`,
-      date: period?.departure_at || null,
+      desc: `Shopper sedang mencarikan pesanan Anda di ` +
+        `${period?.name || 'event'}.`,
+      date: currentStepIndex >= 3 ? period?.departure_at || null : null,
       isCompleted: currentStepIndex >= 3,
       isCurrent: currentStepIndex === 3,
     },
     {
       step: 4,
       title: 'Tiba di Hub Warehouse & QC',
-      desc: 'Barang belanjaan tiba di HQ, pengecekan kondisi fisik & kelengkapan.',
-      date: period?.return_at || null,
+      desc: 'Barang belanjaan tiba di HQ, pengecekan kondisi fisik ' +
+        '& kelengkapan.',
+      date: currentStepIndex >= 4 ? period?.return_at || null : null,
       isCompleted: currentStepIndex >= 4,
       isCurrent: currentStepIndex === 4,
     },
@@ -219,7 +114,7 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
       step: 5,
       title: 'Packing Aman & Siap Kirim',
       desc: 'Barang dibungkus bubble wrap tebal dan disiapkan label pengiriman.',
-      date: latestShipment?.created_at || null,
+      date: currentStepIndex >= 5 ? packingDate : null,
       isCompleted: currentStepIndex >= 5,
       isCurrent: currentStepIndex === 5,
     },
@@ -227,17 +122,19 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
       step: 6,
       title: 'Dalam Pengiriman Kurir',
       desc: latestShipment?.tracking_number
-        ? `Diserahkan ke kurir ${latestShipment.courier || ''} dengan No. Resi ${latestShipment.tracking_number}.`
+        ? `Diserahkan ke kurir ${latestShipment.courier || ''} dengan ` +
+          `No. Resi ${latestShipment.tracking_number}.`
         : 'Menunggu penyerahan paket ke kurir ekspedisi.',
-      date: latestShipment?.shipped_at || null,
+      date: currentStepIndex >= 6 ? shippingDate : null,
       isCompleted: currentStepIndex >= 6,
       isCurrent: currentStepIndex === 6,
     },
     {
       step: 7,
       title: 'Paket Diterima',
-      desc: 'Pesanan telah sampai dengan selamat di tangan customer. Terima kasih!',
-      date: currentStepIndex === 7 ? latestShipment?.updated_at || targetOrder.updated_at : null,
+      desc: 'Pesanan telah sampai dengan selamat di tangan customer. ' +
+        'Terima kasih!',
+      date: currentStepIndex >= 7 ? deliveredDate : null,
       isCompleted: currentStepIndex >= 7,
       isCurrent: currentStepIndex === 7,
     },
