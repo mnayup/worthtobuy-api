@@ -14,6 +14,7 @@ import { PaymentsModule } from './services/payments/payments.module';
 import { InvoicesModule } from './services/invoices/invoices.module';
 import { ShipmentsModule } from './services/shipments/shipments.module';
 import { ShippingCountersModule } from './services/shipping-counters/shipping-counters.module';
+import { WhatsappGroupsModule } from './services/whatsapp-groups/whatsapp-groups.module';
 import { ExpensesModule } from './services/expenses/expenses.module';
 import { RefundsModule } from './services/refunds/refunds.module';
 import { ReportsModule } from './services/reports/reports.module';
@@ -52,6 +53,7 @@ import { BackupModule } from './services/backup/backup.module';
     InvoicesModule,
     ShipmentsModule,
     ShippingCountersModule,
+    WhatsappGroupsModule,
     ExpensesModule,
     RefundsModule,
     ReportsModule,

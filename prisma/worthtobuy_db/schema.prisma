@@ -208,6 +208,8 @@ model customer {
   invoices        invoice[]
   refunds         refund[]
   deposit_balance Decimal        @default(0) @db.Decimal(18, 2)
+  whatsapp_group_id Int?
+  whatsapp_group    whatsapp_group? @relation(fields: [whatsapp_group_id], references: [id])
   created_at      DateTime       @default(now())
   updated_at      DateTime       @updatedAt
   deleted_at      DateTime?
@@ -215,8 +217,27 @@ model customer {
 
   @@index([full_name])
   @@index([whatsapp])
+  @@index([whatsapp_group_id])
   @@index([deleted_at])
   @@map("customers")
+}
+
+model whatsapp_group {
+  id            Int        @id @default(autoincrement())
+  name          String
+  url           String
+  description   String?
+  is_active     Boolean    @default(true)
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+  deleted_at    DateTime?
+  deleted_by_id Int?
+  customers     customer[]
+
+  @@index([name])
+  @@index([is_active])
+  @@index([deleted_at])
+  @@map("whatsapp_groups")
 }
 
 model jastip_period {

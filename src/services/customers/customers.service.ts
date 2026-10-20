@@ -31,11 +31,17 @@ export class CustomersService {
     const segment = query.segment && query.segment !== 'ALL' ? String(query.segment) : undefined;
     const status = query.status && query.status !== 'ALL' ? String(query.status) : undefined;
     const city = query.city && query.city !== 'ALL' ? String(query.city) : undefined;
+    const whatsappGroupIdRaw = query.whatsappGroupId ?? query.whatsapp_group_id;
+    const whatsappGroupId =
+      whatsappGroupIdRaw && whatsappGroupIdRaw !== 'ALL'
+        ? Number(whatsappGroupIdRaw)
+        : undefined;
 
     const where: any = {
       deleted_at: null,
       ...(segment ? { segment } : {}),
       ...(status ? { status } : {}),
+      ...(whatsappGroupId ? { whatsapp_group_id: whatsappGroupId } : {}),
       ...(city ? { city: { contains: city, mode: 'insensitive' } } : {}),
       ...(search
         ? {
@@ -60,7 +66,10 @@ export class CustomersService {
         skip,
         take: limit,
         orderBy: { created_at: 'desc' },
-        include: { _count: { select: { orders: true } } },
+        include: {
+          _count: { select: { orders: true } },
+          whatsapp_group: { select: { id: true, name: true, url: true } },
+        },
       }),
       this.prisma.customer.count({ where }),
     ]);
@@ -73,6 +82,7 @@ export class CustomersService {
       this.prisma.customer.findFirstOrThrow({
         where: { id, deleted_at: null },
         include: {
+          whatsapp_group: true,
           orders: {
             where: { deleted_at: null },
             orderBy: { order_date: 'desc' },
@@ -179,6 +189,7 @@ export class CustomersService {
     return this.prisma.customer.findFirstOrThrow({
       where: { id, deleted_at: null },
       include: {
+        whatsapp_group: true,
         orders: {
           where: { deleted_at: null },
           include: { payments: { where: { deleted_at: null } }, shipments: true },
@@ -194,6 +205,7 @@ export class CustomersService {
     const postal_code = body.postal_code !== undefined ? body.postal_code : body.postalCode;
     const social_username = body.social_username !== undefined ? body.social_username : body.socialUsername;
     const deposit_balance = body.deposit_balance !== undefined ? body.deposit_balance : body.depositBalance;
+    const whatsapp_group_id = body.whatsapp_group_id !== undefined ? body.whatsapp_group_id : body.whatsappGroupId;
 
     const data: any = {};
     if (full_name !== undefined) data.full_name = String(full_name).trim();
@@ -208,6 +220,10 @@ export class CustomersService {
     if (body.segment !== undefined) data.segment = body.segment;
     if (body.status !== undefined) data.status = typeof body.status === 'boolean' ? (body.status ? 'active' : 'inactive') : String(body.status);
     if (deposit_balance !== undefined) data.deposit_balance = Number(deposit_balance || 0);
+    if (whatsapp_group_id !== undefined) {
+      data.whatsapp_group_id =
+        whatsapp_group_id && Number(whatsapp_group_id) > 0 ? Number(whatsapp_group_id) : null;
+    }
 
     return data;
   }

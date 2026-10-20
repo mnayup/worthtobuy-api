@@ -68,6 +68,17 @@ export const PERMISSION_CATALOG: ModuleDef[] = [
     ],
   },
   {
+    key: 'whatsapp-groups',
+    label: 'Master WhatsApp Groups',
+    group: 'Master Data',
+    actions: [
+      { key: 'view', label: 'View WhatsApp Groups' },
+      { key: 'create', label: 'Create WhatsApp Group' },
+      { key: 'edit', label: 'Edit WhatsApp Group' },
+      { key: 'delete', label: 'Delete WhatsApp Group' },
+    ],
+  },
+  {
     key: 'orders',
     label: 'Customer Orders',
     group: 'Operations',
