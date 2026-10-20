@@ -27,11 +27,20 @@ export class PurchasesService {
     const status = query.status ? String(query.status) : undefined;
     const periodId = query.periodId || query.period_id;
     const brand = query.brand || query.brandName || query.brand_name;
+    const productId = query.productId || query.product_id;
 
     const where: any = {
       order_item: { order: { deleted_at: null } },
       ...(status ? { status } : {}),
       ...(periodId ? { period_id: Number(periodId) } : {}),
+      ...(productId
+        ? {
+            OR: [
+              { product_id: Number(productId) },
+              { order_item: { product_id: Number(productId) } },
+            ],
+          }
+        : {}),
       ...(brand
         ? {
             OR: [
