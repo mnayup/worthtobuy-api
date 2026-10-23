@@ -3,14 +3,14 @@ import { BadRequestException } from '@nestjs/common';
 export function isOrderFullyPaid(order: any): boolean {
   if (!order) return false;
 
-  // 1. If invoice links exist, all invoices must be PAID or OVERPAID with 0 outstanding
+  // 1. If invoice links exist, all invoices must be PAID, OVERPAID, or REFUND_DUE with 0 outstanding
   const invoiceLinks = order.invoice_links || order.invoiceLinks;
   if (invoiceLinks && invoiceLinks.length > 0) {
     const hasUnpaidInvoice = invoiceLinks.some((link: any) => {
       const inv = link.invoice;
       if (!inv) return false;
       const outstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
-      return !['PAID', 'OVERPAID'].includes(inv.status) || outstanding > 0;
+      return !['PAID', 'OVERPAID', 'REFUND_DUE'].includes(inv.status) || outstanding > 0;
     });
     if (hasUnpaidInvoice) return false;
   }

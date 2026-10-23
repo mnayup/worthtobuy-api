@@ -7,6 +7,7 @@ import {
 import {
   fetchPublicInvoiceData,
   createPublicPaymentProof,
+  updatePublicShippingMethod,
 } from './helpers/public-invoice.helper';
 import { PUBLIC_FAQ_ITEMS } from './helpers/public-content.helper';
 import { fetchPublicOverviewData } from './helpers/public-overview.helper';
@@ -114,5 +115,9 @@ export class PublicService {
 
   async submitPublicPaymentProof(invoiceNumber: string, body: any) {
     return createPublicPaymentProof(this.prisma, invoiceNumber, body);
+  }
+
+  async updatePublicShippingMethod(invoiceNumber: string, body: any) {
+    return updatePublicShippingMethod(this.prisma, invoiceNumber, body);
   }
 }

@@ -1,5 +1,6 @@
 import { PrismaService } from '../../../config/prisma/prisma.service';
 import { RefundService } from '../../shared/refund.service';
+import { ensureShipmentForOrderHelper } from '../../shared/helpers/order-fulfillment.helper';
 
 export async function handlePurchasedTransitionHelper(
   prisma: PrismaService,
@@ -71,41 +72,8 @@ export async function handlePurchasedTransitionHelper(
       });
     }
 
-    // Only create shipment if order is fully paid and not all kept
-    if (!isPartial && !allKept && (!freshOrder.shipments || freshOrder.shipments.length === 0)) {
-      const orderWithItems = await prisma.order.findUnique({
-        where: { id: freshOrder.id },
-        include: { items: { include: { product: true } } },
-      });
-      const itemsSummary = (orderWithItems?.items || [])
-        .map((i) => {
-          const name = i.product?.name || i.manual_product_name || 'Item';
-          const v = i.variation ? ` (${i.variation})` : '';
-          const s = i.size ? ` (${i.size})` : '';
-          const c = i.color ? ` [${i.color}]` : '';
-          return `${i.quantity}x ${name}${v}${s}${c}`;
-        })
-        .join(', ');
-
-      const rawAddr = freshOrder.customer?.address;
-      const address = rawAddr && rawAddr.trim() !== '-' ? rawAddr.trim() : '-';
-
-      await prisma.shipment.create({
-        data: {
-          order_id: freshOrder.id,
-          customer_id: freshOrder.customer_id,
-          address,
-          courier: 'JNE',
-          service_type: null,
-          tracking_number: null,
-          shipping_cost: freshOrder.customer_shipping || 0,
-          status: 'WAITING_PACKING',
-          notes: itemsSummary
-            ? `Item to pack: ${itemsSummary}`
-            : `Pengiriman dibuat otomatis untuk pesanan ${freshOrder.order_number}.`,
-        },
-      });
-    }
+    // Ensure shipment is created/bundled for fully paid order
+    await ensureShipmentForOrderHelper(prisma, freshOrder.id);
   }
 }
 

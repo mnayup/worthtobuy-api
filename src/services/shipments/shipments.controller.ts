@@ -25,6 +25,22 @@ export class ShipmentsController {
     return this.shipmentsService.findAll(query);
   }
 
+  @Post('merge')
+  @Roles("OWNER", "ADMIN")
+  async merge(@Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {
+    const data = await this.shipmentsService.merge(body, userId);
+    await auditLog(this.prisma, userId, "MERGE", "Shipment", String(data.id), body, req.ip);
+    return data;
+  }
+
+  @Post(':id/split')
+  @Roles("OWNER", "ADMIN")
+  async split(@Param('id') id: string, @Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {
+    const data = await this.shipmentsService.split(Number(id), body, userId);
+    await auditLog(this.prisma, userId, "SPLIT", "Shipment", String(id), body, req.ip);
+    return data;
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.shipmentsService.findOne(Number(id));

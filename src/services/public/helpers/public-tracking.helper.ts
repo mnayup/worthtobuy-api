@@ -13,8 +13,7 @@ export function buildTrackingTimelineResponse(targetOrder: any, invoice: any) {
   let currentStepIndex = 1;
 
   const isPaidOrPartial =
-    invoiceStatus === 'PAID' ||
-    invoiceStatus === 'PARTIAL' ||
+    ['PAID', 'OVERPAID', 'REFUND_DUE', 'PARTIAL'].includes(invoiceStatus) ||
     Number(targetOrder.paid_amount || 0) > 0;
 
   if (isPaidOrPartial) currentStepIndex = 2;

@@ -124,6 +124,25 @@ export function cleanShipmentData(body: any): any {
   if (body.notes !== undefined) {
     cleaned.notes = body.notes ? String(body.notes).trim() : null;
   }
+  if (body.shipping_method !== undefined || body.shippingMethod !== undefined) {
+    const val = body.shipping_method !== undefined ? body.shipping_method : body.shippingMethod;
+    cleaned.shipping_method = val ? String(val).trim() : 'MANUAL';
+  }
+  if (body.shopee_username !== undefined || body.shopeeUsername !== undefined) {
+    const val = body.shopee_username !== undefined ? body.shopee_username : body.shopeeUsername;
+    cleaned.shopee_username = val ? String(val).trim() : null;
+  }
+  if (
+    body.shopee_refund_amount !== undefined ||
+    body.shopeeRefundAmount !== undefined
+  ) {
+    const val =
+      body.shopee_refund_amount !== undefined
+        ? body.shopee_refund_amount
+        : body.shopeeRefundAmount;
+    cleaned.shopee_refund_amount =
+      val !== null && val !== undefined && val !== '' ? Number(val) : null;
+  }
 
   return cleaned;
 }

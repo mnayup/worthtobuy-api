@@ -49,6 +49,62 @@ export async function insertPaymentRecord(
     }
   }
 
+  const rawShippingMethod =
+    body.shipping_method !== undefined ? body.shipping_method : body.shippingMethod;
+  const rawShopeeUsername =
+    body.shopee_username !== undefined ? body.shopee_username : body.shopeeUsername;
+
+  if (rawShippingMethod !== undefined) {
+    const shipping_method =
+      String(rawShippingMethod).toUpperCase() === 'SHOPEE' ? 'SHOPEE' : 'MANUAL';
+    const shopee_username = rawShopeeUsername ? String(rawShopeeUsername).trim() : null;
+
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        shipping_method,
+        shopee_username,
+      },
+    });
+
+    const orderIds = (invoice.orders || []).map((link: any) => link.order_id);
+    if (orderIds.length > 0) {
+      await prisma.order.updateMany({
+        where: { id: { in: orderIds } },
+        data: {
+          shipping_method,
+          shopee_username,
+        },
+      });
+
+      if (shipping_method === 'SHOPEE') {
+        await prisma.shipment.updateMany({
+          where: { order_id: { in: orderIds }, status: 'WAITING_PACKING' },
+          data: {
+            courier: 'Shopee',
+            service_type: 'Checkout Shopee',
+            shipping_method: 'SHOPEE',
+            shopee_username,
+          },
+        });
+      } else {
+        await prisma.shipment.updateMany({
+          where: {
+            order_id: { in: orderIds },
+            status: 'WAITING_PACKING',
+            courier: 'Shopee',
+          },
+          data: {
+            courier: 'JNE',
+            service_type: null,
+            shipping_method: 'MANUAL',
+            shopee_username: null,
+          },
+        });
+      }
+    }
+  }
+
   const customerName = invoice.customer?.full_name || 'Pelanggan';
   const notifMsg =
     `${invoice.invoice_number} • ${customerName} mengunggah bukti ` +

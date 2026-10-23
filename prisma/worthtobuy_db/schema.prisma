@@ -139,6 +139,7 @@ enum RefundSource {
   OVERPAYMENT
   SHIPPING_OVERPAYMENT
   UNAVAILABLE_ITEM
+  SHOPEE_CHECKOUT
 }
 
 enum PeriodType {
@@ -338,10 +339,13 @@ model order {
   outstanding_amount       Decimal         @default(0) @db.Decimal(18, 2)
   customer_notes           String?
   internal_notes           String?
+  shipping_method          String?         @default("MANUAL")
+  shopee_username          String?
   due_date                 DateTime?
   items                    order_item[]
   payments                 payment[]
   shipments                shipment[]
+  shipment_orders          shipment_order[]
   refunds                  refund[]
   invoice_links            invoice_order[]
   created_at               DateTime        @default(now())
@@ -511,6 +515,9 @@ model shipment {
   shipping_cost            Decimal        @default(0) @db.Decimal(18, 2)
   actual_shipping_cost     Decimal?       @db.Decimal(18, 2)
   shipping_cost_difference Decimal?       @db.Decimal(18, 2)
+  shipping_method          String?        @default("MANUAL")
+  shopee_username          String?
+  shopee_refund_amount     Decimal?       @db.Decimal(18, 2)
   shipped_at               DateTime?
   packed_at                DateTime?
   status                   ShipmentStatus @default(WAITING_PACKING)
@@ -520,11 +527,27 @@ model shipment {
   created_at               DateTime       @default(now())
   updated_at               DateTime       @updatedAt
 
+  shipment_orders          shipment_order[]
+
   @@index([order_id])
   @@index([customer_id])
   @@index([shipping_counter_id])
   @@index([status])
   @@map("shipments")
+}
+
+model shipment_order {
+  id          Int      @id @default(autoincrement())
+  shipment_id Int
+  shipment    shipment @relation(fields: [shipment_id], references: [id], onDelete: Cascade)
+  order_id    Int
+  order       order    @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  created_at  DateTime @default(now())
+
+  @@unique([shipment_id, order_id])
+  @@index([shipment_id])
+  @@index([order_id])
+  @@map("shipment_orders")
 }
 
 model shipping_counter {
@@ -602,6 +625,8 @@ model invoice {
   use_deposit        Boolean         @default(false)
   notes              String?
   billing_model      String?         @default("FLEXIBLE")
+  shipping_method    String?         @default("MANUAL")
+  shopee_username    String?
   dp_percent         Int?
   dp_amount          Decimal?        @db.Decimal(18, 2)
   dp_settlement_note String?

@@ -250,6 +250,25 @@ export class InitialSetupService implements OnApplicationBootstrap {
           await this.prisma.setting.create({ data: { key: setting.key, value: setting.value as any } });
         }
       }
+
+      // Backfill shipment_orders for existing shipments
+      const existingShipments = await this.prisma.shipment.findMany({
+        where: {
+          shipment_orders: { none: {} },
+        },
+        select: { id: true, order_id: true },
+      });
+      for (const s of existingShipments) {
+        if (s.order_id) {
+          await this.prisma.shipment_order.upsert({
+            where: {
+              shipment_id_order_id: { shipment_id: s.id, order_id: s.order_id },
+            },
+            create: { shipment_id: s.id, order_id: s.order_id },
+            update: {},
+          });
+        }
+      }
     } catch (err) {
       this.logger.error('Error during initial setup:', err);
     }

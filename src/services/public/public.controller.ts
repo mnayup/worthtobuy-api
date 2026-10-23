@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Query, Body } from '@nestjs/common';
 import { PublicService } from './public.service';
 
 @Controller('public')
@@ -46,5 +46,13 @@ export class PublicController {
     @Body() body: any
   ) {
     return this.publicService.submitPublicPaymentProof(invoiceNumber, body);
+  }
+
+  @Patch('invoices/:invoiceNumber/shipping-method')
+  async updateShippingMethod(
+    @Param('invoiceNumber') invoiceNumber: string,
+    @Body() body: any
+  ) {
+    return this.publicService.updatePublicShippingMethod(invoiceNumber, body);
   }
 }

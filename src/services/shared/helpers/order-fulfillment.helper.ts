@@ -123,6 +123,16 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
     include: {
       customer: true,
       shipments: true,
+      shipment_orders: true,
+      invoice_links: {
+        include: {
+          invoice: {
+            include: {
+              orders: true,
+            },
+          },
+        },
+      },
       items: {
         include: {
           product: true,
@@ -143,36 +153,173 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
   const isPartial = Number(order.outstanding_amount || 0) > 0;
   if (isPartial) return;
 
+  // Check if order already belongs to any shipment
   if (order.shipments && order.shipments.length > 0) return;
+  if (order.shipment_orders && order.shipment_orders.length > 0) return;
 
-  const address = order.customer?.address && order.customer?.address.trim() !== '-'
-    ? order.customer.address.trim()
-    : '-';
+  const address =
+    order.customer?.address && order.customer?.address.trim() !== '-'
+      ? order.customer.address.trim()
+      : '-';
 
-  const itemsSummary = order.items && order.items.length > 0
-    ? order.items
-        .map(
-          (i) =>
-            `${i.quantity}x ${i.product?.name || i.manual_product_name || 'Item'}${
-              i.variation ? ` (${i.variation})` : ''
-            }${i.size ? ` (${i.size})` : ''}${i.color ? ` [${i.color}]` : ''}`
-        )
-        .join(', ')
+  const itemsSummary =
+    order.items && order.items.length > 0
+      ? order.items
+          .map(
+            (i) =>
+              `${i.quantity}x ${i.product?.name || i.manual_product_name || 'Item'}${
+                i.variation ? ` (${i.variation})` : ''
+              }${i.size ? ` (${i.size})` : ''}${i.color ? ` [${i.color}]` : ''}`
+          )
+          .join(', ')
+      : '';
+
+  // Check for candidate existing WAITING_PACKING shipment to bundle into
+  // Priority 1: Same invoice
+  const siblingOrderIds = (order.invoice_links || [])
+    .flatMap((link) => link.invoice?.orders.map((o) => o.order_id) || [])
+    .filter((id) => id !== order.id);
+
+  let candidateShipment: any = null;
+  if (siblingOrderIds.length > 0) {
+    candidateShipment = await prisma.shipment.findFirst({
+      where: {
+        status: 'WAITING_PACKING',
+        packed_at: null,
+        OR: [
+          { order_id: { in: siblingOrderIds } },
+          { shipment_orders: { some: { order_id: { in: siblingOrderIds } } } },
+        ],
+      },
+      include: {
+        shipment_orders: {
+          include: {
+            order: {
+              include: {
+                items: { include: { product: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Priority 2: Same customer
+  if (!candidateShipment && order.customer_id) {
+    candidateShipment = await prisma.shipment.findFirst({
+      where: {
+        customer_id: order.customer_id,
+        status: 'WAITING_PACKING',
+        packed_at: null,
+      },
+      orderBy: { created_at: 'desc' },
+      include: {
+        shipment_orders: {
+          include: {
+            order: {
+              include: {
+                items: { include: { product: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  if (candidateShipment) {
+    // Attach order to candidate shipment
+    await prisma.shipment_order.upsert({
+      where: {
+        shipment_id_order_id: {
+          shipment_id: candidateShipment.id,
+          order_id: order.id,
+        },
+      },
+      create: {
+        shipment_id: candidateShipment.id,
+        order_id: order.id,
+      },
+      update: {},
+    });
+
+    const allOrdersInShipment = [
+      ...candidateShipment.shipment_orders.map((so: any) => so.order),
+      order,
+    ];
+    const uniqueOrdersMap = new Map();
+    for (const ord of allOrdersInShipment) {
+      if (ord && !uniqueOrdersMap.has(ord.id)) {
+        uniqueOrdersMap.set(ord.id, ord);
+      }
+    }
+    const ordersList = Array.from(uniqueOrdersMap.values());
+
+    const allItems = ordersList.flatMap((o: any) => o.items || []);
+    const fullItemsSummary = allItems
+      .map(
+        (i: any) =>
+          `${i.quantity}x ${i.product?.name || i.manual_product_name || 'Item'}${
+            i.variation ? ` (${i.variation})` : ''
+          }${i.size ? ` (${i.size})` : ''}${i.color ? ` [${i.color}]` : ''}`
+      )
+      .join(', ');
+
+    const combinedShippingCost = ordersList.reduce(
+      (sum: number, o: any) => sum + Number(o.customer_shipping || 0),
+      0
+    );
+
+    const candidateAddress =
+      candidateShipment.address && candidateShipment.address.trim() !== '-'
+        ? candidateShipment.address
+        : address;
+
+    await prisma.shipment.update({
+      where: { id: candidateShipment.id },
+      data: {
+        shipping_cost: combinedShippingCost,
+        address: candidateAddress,
+        notes: fullItemsSummary
+          ? `Item to pack: ${fullItemsSummary}`
+          : candidateShipment.notes,
+      },
+    });
+    return;
+  }
+
+  const isShopee = order.shipping_method === 'SHOPEE';
+  const defaultCourier = isShopee ? 'Shopee' : 'JNE';
+  const defaultService = isShopee ? 'Checkout Shopee' : null;
+  const shopeeNote = isShopee
+    ? ` [Kirim via Shopee${order.shopee_username ? ` - Akun: ${order.shopee_username}` : ''}]`
     : '';
 
-  await prisma.shipment.create({
+  // Create new shipment
+  const newShipment = await prisma.shipment.create({
     data: {
       order_id: order.id,
       customer_id: order.customer_id,
       address,
-      courier: 'JNE',
-      service_type: null,
+      courier: defaultCourier,
+      service_type: defaultService,
+      shipping_method: order.shipping_method || 'MANUAL',
+      shopee_username: order.shopee_username || null,
       tracking_number: null,
       shipping_cost: order.customer_shipping || 0,
       status: 'WAITING_PACKING',
-      notes: itemsSummary
-        ? `Item to pack: ${itemsSummary}`
-        : `Pengiriman otomatis dibuat untuk pesanan ${order.order_number}.`,
+      notes:
+        (itemsSummary
+          ? `Item to pack: ${itemsSummary}`
+          : `Pengiriman otomatis dibuat untuk pesanan ${order.order_number}.`) + shopeeNote,
+    },
+  });
+
+  await prisma.shipment_order.create({
+    data: {
+      shipment_id: newShipment.id,
+      order_id: order.id,
     },
   });
 }
