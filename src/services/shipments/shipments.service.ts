@@ -328,10 +328,10 @@ export class ShipmentsService {
       cleaned.packed_at = new Date();
     }
 
-    const effectiveCourier = cleaned.courier || current.courier || '';
+    const effectiveCourier = cleaned.courier !== undefined ? cleaned.courier : current.courier || '';
     const isShopee =
       cleaned.shipping_method === 'SHOPEE' ||
-      current.shipping_method === 'SHOPEE' ||
+      (cleaned.shipping_method === undefined && current.shipping_method === 'SHOPEE') ||
       effectiveCourier.toLowerCase().includes('shopee');
 
     if (isShopee) {
@@ -349,15 +349,23 @@ export class ShipmentsService {
           targetStatus = 'IN_TRANSIT';
         }
       }
-    } else if (cleaned.actual_shipping_cost !== undefined && cleaned.actual_shipping_cost !== null) {
-      targetStatus = await processShippingCostVariance({
-        prisma: this.prisma,
-        refundService: this.refundService,
-        invoiceCalcService: this.invoiceCalcService,
-        current,
-        cleaned,
-        targetStatus,
-      });
+    } else {
+      // Switched away from Shopee: clear Shopee data and cancel any pending Shopee refund
+      cleaned.shopee_refund_amount = null;
+      cleaned.shopee_username = null;
+      cleaned.shipping_method = 'MANUAL';
+      await this.refundService.ensureShopeeRefund(current.id, current.order_id, 0);
+
+      if (cleaned.actual_shipping_cost !== undefined && cleaned.actual_shipping_cost !== null) {
+        targetStatus = await processShippingCostVariance({
+          prisma: this.prisma,
+          refundService: this.refundService,
+          invoiceCalcService: this.invoiceCalcService,
+          current,
+          cleaned,
+          targetStatus,
+        });
+      }
     }
 
     const data = await this.prisma.shipment.update({ where: { id }, data: cleaned });

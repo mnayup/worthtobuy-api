@@ -139,13 +139,19 @@ export class ReportsService {
     const goodsMargin = goodsRevenue - actualBuyPrice;
     const goodsMarginPercent = goodsRevenue > 0 ? (goodsMargin / goodsRevenue) * 100 : 0;
 
-    const refunds = allRefunds.map((refund) => {
-      if (refund.invoice_id && activeInvoiceIds.has(refund.invoice_id)) {
-        return Number(refund.amount) * (invoiceRatioById.get(Number(refund.invoice_id)) || 0);
+    const nonShopeeRefunds = allRefunds.filter((r) => r.source !== 'SHOPEE_CHECKOUT');
+    const shopeeRefunds = allRefunds.filter((r) => r.source === 'SHOPEE_CHECKOUT');
+
+    const getRefundValue = (ref: typeof allRefunds[0]) => {
+      if (ref.invoice_id && activeInvoiceIds.has(ref.invoice_id)) {
+        return Number(ref.amount) * (invoiceRatioById.get(Number(ref.invoice_id)) || 0);
       }
-      if (refund.order_id && orderIds.includes(Number(refund.order_id))) return Number(refund.amount);
+      if (ref.order_id && orderIds.includes(Number(ref.order_id))) return Number(ref.amount);
       return 0;
-    });
+    };
+
+    const refund = nonShopeeRefunds.reduce((sum, r) => sum + getRefundValue(r), 0);
+    const shopeeRefundTotal = shopeeRefunds.reduce((sum, r) => sum + getRefundValue(r), 0);
 
     const operational = expenses.reduce((sum, row) => sum + Number(row.amount_idr), 0);
     const expenseBreakdown = expenses.reduce(
@@ -158,7 +164,6 @@ export class ReportsService {
     );
 
     const omzet = invoiceScopes.reduce((sum, scope) => sum + scope.scopedBill, 0);
-    const refund = refunds.reduce((sum, amount) => sum + amount, 0);
     const grossProfit = omzet - actualBuyPrice;
     const netProfit = grossProfit - operational - refund;
     const receivables = invoiceScopes.reduce((sum, scope) => sum + scope.scopedOutstanding, 0);
@@ -190,6 +195,7 @@ export class ReportsService {
       operational,
       expenseBreakdown,
       refund,
+      shopeeRefund: shopeeRefundTotal,
       grossProfit,
       netProfit,
       margin: omzet ? (netProfit / omzet) * 100 : 0,

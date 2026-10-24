@@ -79,6 +79,13 @@ const INITIAL_SHIPPING_COUNTERS = [
     notes: 'Pengiriman kurir kilat on-demand dalam kota armada motor & mobil (Instant Bike & Car).',
     is_active: true,
   },
+  {
+    name: 'Shopee (Checkout Shopee)',
+    courier: 'Shopee',
+    code: 'SHOPEE',
+    notes: 'Default sistem untuk pengiriman Checkout Shopee (Gratis Ongkir / Subsidi CO Shopee).',
+    is_active: true,
+  },
 ];
 
 @Injectable()
@@ -91,13 +98,21 @@ export class ShippingCountersService implements OnModuleInit {
 
   async ensureSeedData() {
     try {
-      const count = await this.prisma.shipping_counter.count({ where: { deleted_at: null } });
-      if (count === 0) {
-        for (const item of INITIAL_SHIPPING_COUNTERS) {
+      for (const item of INITIAL_SHIPPING_COUNTERS) {
+        const existing = await this.prisma.shipping_counter.findFirst({
+          where: {
+            OR: [
+              { name: item.name },
+              { code: item.code },
+              { courier: item.courier },
+            ],
+            deleted_at: null,
+          },
+        });
+        if (!existing) {
           await this.prisma.shipping_counter.create({
             data: {
               ...item,
-              notes: 'Default master courier / ekspedisi',
             },
           });
         }
@@ -218,7 +233,18 @@ export class ShippingCountersService implements OnModuleInit {
   }
 
   async remove(id: number, user_id?: number) {
-    await this.findOne(id);
+    const counter = await this.findOne(id);
+    const isSystemCourier =
+      (counter.name || '').toLowerCase().includes('shopee') ||
+      (counter.code || '').toUpperCase() === 'SHOPEE' ||
+      (counter.courier || '').toLowerCase().includes('shopee');
+
+    if (isSystemCourier) {
+      throw new BadRequestException(
+        'Kurir default sistem "Shopee (Checkout Shopee)" tidak dapat dihapus.'
+      );
+    }
+
     return this.prisma.shipping_counter.update({
       where: { id },
       data: {

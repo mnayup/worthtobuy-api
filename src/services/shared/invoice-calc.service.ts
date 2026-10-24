@@ -157,9 +157,28 @@ export class InvoiceCalcService {
           }
         }
       } else {
+        const activeItems = (orderData?.items || []).filter(
+          (it) => it.fulfillment_status !== 'UNAVAILABLE'
+        );
+        const allItemsBought =
+          activeItems.length > 0 &&
+          activeItems.every((it) =>
+            ['AVAILABLE', 'KEPT', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(it.fulfillment_status)
+          );
+        const allKept =
+          activeItems.length > 0 &&
+          activeItems.every((it) => it.fulfillment_status === 'KEPT');
+
         if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(link.order.status)) {
-          if (orderPaid > 0 || isPriorityCustomer) nextStatus = 'WAITING_PURCHASE';
-        } else if (link.order.status === 'WAITING_SETTLEMENT') {
+          if (allItemsBought && !allKept) {
+            nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
+            if (orderOutstanding <= 0) {
+              await this.ensureShipmentForOrder(link.order_id);
+            }
+          } else if (orderPaid > 0 || isPriorityCustomer) {
+            nextStatus = 'WAITING_PURCHASE';
+          }
+        } else if (link.order.status === 'WAITING_SETTLEMENT' || link.order.status === 'READY_TO_SHIP') {
           if (orderOutstanding <= 0) {
             const ship = await this.prisma.shipment.findFirst({ where: { order_id: link.order_id } });
             if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {
@@ -234,9 +253,28 @@ export class InvoiceCalcService {
         }
       }
     } else {
+      const activeItems = (orderData?.items || []).filter(
+        (it) => it.fulfillment_status !== 'UNAVAILABLE'
+      );
+      const allItemsBought =
+        activeItems.length > 0 &&
+        activeItems.every((it) =>
+          ['AVAILABLE', 'KEPT', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(it.fulfillment_status)
+        );
+      const allKept =
+        activeItems.length > 0 &&
+        activeItems.every((it) => it.fulfillment_status === 'KEPT');
+
       if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
-        if (paid_amount > 0 || isPriorityCustomer) nextStatus = 'WAITING_PURCHASE';
-      } else if (order.status === 'WAITING_SETTLEMENT') {
+        if (allItemsBought && !allKept) {
+          nextStatus = outstanding_amount <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
+          if (outstanding_amount <= 0) {
+            await this.ensureShipmentForOrder(order_id);
+          }
+        } else if (paid_amount > 0 || isPriorityCustomer) {
+          nextStatus = 'WAITING_PURCHASE';
+        }
+      } else if (order.status === 'WAITING_SETTLEMENT' || order.status === 'READY_TO_SHIP') {
         if (outstanding_amount <= 0) {
           const ship = await this.prisma.shipment.findFirst({ where: { order_id } });
           if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {

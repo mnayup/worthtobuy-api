@@ -50,21 +50,23 @@ export class PeriodsService implements OnModuleInit {
     const type = query.type && query.type !== 'ALL' ? String(query.type) : undefined;
     const city = query.city && query.city !== 'ALL' ? String(query.city) : undefined;
 
+    const andConditions: any[] = [{ deleted_at: null }];
+    if (status) andConditions.push({ status });
+    if (type) andConditions.push({ type });
+    if (city) andConditions.push({ city: { contains: city, mode: 'insensitive' } });
+    if (search) {
+      andConditions.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { code: { contains: search, mode: 'insensitive' } },
+          { city: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+        ],
+      });
+    }
+
     const where: any = {
-      deleted_at: null,
-      ...(status ? { status } : {}),
-      ...(type ? { type } : {}),
-      ...(city ? { city: { contains: city, mode: 'insensitive' } } : {}),
-      ...(search
-        ? {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { code: { contains: search, mode: 'insensitive' } },
-            { city: { contains: search, mode: 'insensitive' } },
-            { notes: { contains: search, mode: 'insensitive' } },
-          ],
-        }
-        : {}),
+      AND: andConditions,
     };
 
     const [data, total] = await Promise.all([
