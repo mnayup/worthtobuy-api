@@ -24,7 +24,7 @@ import { RolesModule } from './services/roles/roles.module';
 import { SettingsModule } from './services/settings/settings.module';
 import { NotificationsModule } from './services/notifications/notifications.module';
 import { TrashModule } from './services/trash/trash.module';
-import { AiModule } from './services/ai/ai.module';
+import { NavigationModule } from './services/navigation/navigation.module';
 import { ReminderService } from './services/shared/reminder.service';
 import { InitialSetupService } from './services/shared/initial-setup.service';
 import { UploadsModule } from './services/uploads/uploads.module';
@@ -63,7 +63,7 @@ import { BackupModule } from './services/backup/backup.module';
     SettingsModule,
     NotificationsModule,
     TrashModule,
-    AiModule,
+    NavigationModule,
   ],
   providers: [ReminderService, InitialSetupService],
 })

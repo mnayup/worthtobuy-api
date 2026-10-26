@@ -21,15 +21,6 @@ export const PERMISSION_CATALOG: ModuleDef[] = [
     ],
   },
   {
-    key: 'ai-assistant',
-    label: 'Worthtobuy AI Insights',
-    group: 'Main',
-    actions: [
-      { key: 'view', label: 'Access AI Assistant' },
-      { key: 'chat', label: 'Execute AI Prompts' },
-    ],
-  },
-  {
     key: 'periods',
     label: 'Events / Jastip Periods',
     group: 'Master Data',

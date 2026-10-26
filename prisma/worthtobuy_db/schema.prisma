@@ -148,16 +148,67 @@ enum PeriodType {
 }
 
 model role {
-  id              Int      @id @default(autoincrement())
-  name            String   @unique
-  description     String?
-  can_view_profit Boolean  @default(false)
-  permissions     Json
-  users           user[]
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id               Int               @id @default(autoincrement())
+  name             String            @unique
+  description      String?
+  can_view_profit  Boolean           @default(false)
+  permissions      Json
+  role_permissions role_permission[]
+  role_navigations role_navigation[]
+  users            user[]
+  created_at       DateTime          @default(now())
+  updated_at       DateTime          @updatedAt
 
   @@map("roles")
+}
+
+model role_permission {
+  id         Int      @id @default(autoincrement())
+  role_id    Int
+  role       role     @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission String
+  created_at DateTime @default(now())
+
+  @@unique([role_id, permission])
+  @@index([role_id])
+  @@index([permission])
+  @@map("role_permissions")
+}
+
+model navigation_item {
+  id               Int               @id @default(autoincrement())
+  key              String            @unique
+  label            String
+  path             String
+  icon             String
+  group_title      String
+  parent_id        Int?
+  parent           navigation_item?  @relation("SubNavItems", fields: [parent_id], references: [id], onDelete: Cascade)
+  sub_items        navigation_item[] @relation("SubNavItems")
+  sort_order       Int               @default(0)
+  permission_key   String?
+  is_active        Boolean           @default(true)
+  role_navigations role_navigation[]
+  created_at       DateTime          @default(now())
+  updated_at       DateTime          @updatedAt
+
+  @@index([parent_id])
+  @@index([group_title, sort_order])
+  @@map("navigation_items")
+}
+
+model role_navigation {
+  id                 Int             @id @default(autoincrement())
+  role_id            Int
+  role               role            @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  navigation_item_id Int
+  navigation_item    navigation_item @relation(fields: [navigation_item_id], references: [id], onDelete: Cascade)
+  created_at         DateTime        @default(now())
+
+  @@unique([role_id, navigation_item_id])
+  @@index([role_id])
+  @@index([navigation_item_id])
+  @@map("role_navigations")
 }
 
 model user {

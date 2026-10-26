@@ -68,8 +68,6 @@ const DEFAULT_ROLES = [
     can_view_profit: false,
     permissions: [
       'dashboard:view',
-      'ai-assistant:view',
-      'ai-assistant:chat',
       'periods:view',
       'periods:create',
       'periods:edit',

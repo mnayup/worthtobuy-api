@@ -61,7 +61,7 @@ export class RolesService {
 
     const permissions = Array.isArray(body.permissions) ? body.permissions : [];
 
-    return this.prisma.role.create({
+    const newRole = await this.prisma.role.create({
       data: {
         name: cleanName,
         description: body.description?.trim() || null,
@@ -69,6 +69,18 @@ export class RolesService {
         permissions: permissions as any,
       },
     });
+
+    if (permissions.length > 0) {
+      await this.prisma.role_permission.createMany({
+        data: permissions.map((p) => ({
+          role_id: newRole.id,
+          permission: p,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    return newRole;
   }
 
   async update(id: number, body: { name?: string; description?: string; can_view_profit?: boolean; permissions?: string[] }) {
@@ -81,13 +93,15 @@ export class RolesService {
     if (body.can_view_profit !== undefined) {
       updateData.can_view_profit = Boolean(body.can_view_profit);
     }
+    let finalPermissions: string[] | undefined = undefined;
     if (body.permissions !== undefined) {
       // If updating OWNER, ensure '*' remains
       if (target.name === 'OWNER' && !body.permissions.includes('*')) {
-        updateData.permissions = ['*', ...body.permissions];
+        finalPermissions = ['*', ...body.permissions];
       } else {
-        updateData.permissions = body.permissions;
+        finalPermissions = body.permissions;
       }
+      updateData.permissions = finalPermissions;
     }
     if (body.name && body.name.trim().toUpperCase() !== target.name) {
       if (BUILTIN_ROLES.includes(target.name)) {
@@ -101,10 +115,25 @@ export class RolesService {
       updateData.name = newName;
     }
 
-    return this.prisma.role.update({
+    const updated = await this.prisma.role.update({
       where: { id },
       data: updateData,
     });
+
+    if (finalPermissions !== undefined) {
+      await this.prisma.role_permission.deleteMany({ where: { role_id: id } });
+      if (finalPermissions.length > 0) {
+        await this.prisma.role_permission.createMany({
+          data: finalPermissions.map((p) => ({
+            role_id: id,
+            permission: p,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    return updated;
   }
 
   async remove(id: number) {

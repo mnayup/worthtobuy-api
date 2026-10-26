@@ -77,8 +77,6 @@ const DEFAULT_ROLES = [
     can_view_profit: false,
     permissions: [
       'dashboard:view',
-      'ai-assistant:view',
-      'ai-assistant:chat',
       'periods:view',
       'periods:create',
       'periods:edit',
@@ -269,8 +267,289 @@ export class InitialSetupService implements OnApplicationBootstrap {
           });
         }
       }
+
+      // Sync role_permissions table from existing role permissions JSON
+      const allRoles = await this.prisma.role.findMany();
+      for (const r of allRoles) {
+        const perms: string[] = Array.isArray(r.permissions) ? (r.permissions as string[]) : [];
+        if (perms.length > 0) {
+          await this.prisma.role_permission.createMany({
+            data: perms.map((p) => ({ role_id: r.id, permission: p })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      // Seed / Ensure default navigation items in database
+      await this.seedNavigationItems();
     } catch (err) {
       this.logger.error('Error during initial setup:', err);
+    }
+  }
+
+  private async seedNavigationItems() {
+    const defaultNavStructure = [
+      {
+        key: 'dashboard',
+        label: 'Dashboard',
+        path: '/dashboard',
+        icon: 'LayoutDashboard',
+        group_title: 'Main',
+        sort_order: 10,
+        permission_key: 'dashboard:view',
+      },
+      {
+        key: 'periods',
+        label: 'Events',
+        path: '/periods',
+        icon: 'ClipboardList',
+        group_title: 'Master Data',
+        sort_order: 20,
+        permission_key: 'periods:view',
+      },
+      {
+        key: 'products',
+        label: 'Products',
+        path: '/products',
+        icon: 'Boxes',
+        group_title: 'Master Data',
+        sort_order: 21,
+        permission_key: 'products:view',
+      },
+      {
+        key: 'customers',
+        label: 'Customers',
+        path: '/customers',
+        icon: 'Users',
+        group_title: 'Master Data',
+        sort_order: 22,
+        permission_key: 'customers:view',
+      },
+      {
+        key: 'whatsapp-groups',
+        label: 'WhatsApp Groups',
+        path: '/whatsapp-groups',
+        icon: 'MessageCircle',
+        group_title: 'Master Data',
+        sort_order: 23,
+        permission_key: 'whatsapp-groups:view',
+      },
+      {
+        key: 'shipping-counters',
+        label: 'Shipping Couriers',
+        path: '/shipping-counters',
+        icon: 'Truck',
+        group_title: 'Master Data',
+        sort_order: 24,
+        permission_key: 'shipping-counters:view',
+      },
+      {
+        key: 'orders',
+        label: 'Orders',
+        path: '/orders',
+        icon: 'ReceiptText',
+        group_title: 'Operations',
+        sort_order: 30,
+        permission_key: 'orders:view',
+      },
+      {
+        key: 'purchases',
+        label: 'Purchases',
+        path: '/purchases',
+        icon: 'ShoppingBag',
+        group_title: 'Operations',
+        sort_order: 31,
+        permission_key: 'purchases:view',
+      },
+      {
+        key: 'shipments',
+        label: 'Shipments',
+        path: '/shipments',
+        icon: 'Truck',
+        group_title: 'Operations',
+        sort_order: 32,
+        permission_key: 'shipments:view',
+      },
+      {
+        key: 'keep-items',
+        label: 'Keep Items',
+        path: '/keep-items',
+        icon: 'Archive',
+        group_title: 'Operations',
+        sort_order: 33,
+        permission_key: 'keep-items:view',
+      },
+      {
+        key: 'invoices',
+        label: 'Invoices & Billing',
+        path: '/invoices',
+        icon: 'FileText',
+        group_title: 'Finance',
+        sort_order: 40,
+        permission_key: 'invoices:view',
+        sub_items: [
+          {
+            key: 'invoices-list',
+            label: 'Customer Invoices',
+            path: '/invoices',
+            icon: 'FileText',
+            group_title: 'Finance',
+            sort_order: 41,
+            permission_key: 'invoices:view',
+          },
+          {
+            key: 'payments-list',
+            label: 'Payment History',
+            path: '/payments',
+            icon: 'CircleDollarSign',
+            group_title: 'Finance',
+            sort_order: 42,
+            permission_key: 'payments:view',
+          },
+          {
+            key: 'refunds-list',
+            label: 'Refunds',
+            path: '/refunds',
+            icon: 'RotateCcw',
+            group_title: 'Finance',
+            sort_order: 43,
+            permission_key: 'refunds:view',
+          },
+        ],
+      },
+      {
+        key: 'expenses',
+        label: 'Expenses',
+        path: '/expenses',
+        icon: 'CircleDollarSign',
+        group_title: 'Finance',
+        sort_order: 44,
+        permission_key: 'expenses:view',
+      },
+      {
+        key: 'finance',
+        label: 'Cash Flow & Reports',
+        path: '/finance',
+        icon: 'Landmark',
+        group_title: 'Finance',
+        sort_order: 45,
+        permission_key: 'finance:view',
+        sub_items: [
+          {
+            key: 'finance-overview',
+            label: 'Cash Flow Overview',
+            path: '/finance',
+            icon: 'Landmark',
+            group_title: 'Finance',
+            sort_order: 46,
+            permission_key: 'finance:view',
+          },
+          {
+            key: 'summary-fees',
+            label: 'Summary & Fees',
+            path: '/summary',
+            icon: 'Calculator',
+            group_title: 'Finance',
+            sort_order: 47,
+            permission_key: 'summary:view',
+          },
+          {
+            key: 'profit-loss-reports',
+            label: 'Profit & Loss Report',
+            path: '/reports',
+            icon: 'FileBarChart2',
+            group_title: 'Finance',
+            sort_order: 48,
+            permission_key: 'reports:view',
+          },
+        ],
+      },
+      {
+        key: 'users',
+        label: 'User Management',
+        path: '/users',
+        icon: 'UserCog',
+        group_title: 'System',
+        sort_order: 50,
+        permission_key: 'users:view',
+      },
+      {
+        key: 'roles',
+        label: 'Role & Permissions',
+        path: '/roles',
+        icon: 'ShieldCheck',
+        group_title: 'System',
+        sort_order: 51,
+        permission_key: 'roles:view',
+      },
+      {
+        key: 'settings',
+        label: 'System Settings',
+        path: '/settings',
+        icon: 'Settings',
+        group_title: 'System',
+        sort_order: 52,
+        permission_key: 'settings:view',
+      },
+      {
+        key: 'trash',
+        label: 'Trash / Bin',
+        path: '/trash',
+        icon: 'Trash2',
+        group_title: 'System',
+        sort_order: 53,
+        permission_key: 'trash:view',
+      },
+    ];
+
+    for (const item of defaultNavStructure) {
+      const parent = await this.prisma.navigation_item.upsert({
+        where: { key: item.key },
+        update: {
+          label: item.label,
+          path: item.path,
+          icon: item.icon,
+          group_title: item.group_title,
+          sort_order: item.sort_order,
+          permission_key: item.permission_key,
+        },
+        create: {
+          key: item.key,
+          label: item.label,
+          path: item.path,
+          icon: item.icon,
+          group_title: item.group_title,
+          sort_order: item.sort_order,
+          permission_key: item.permission_key,
+        },
+      });
+
+      if (item.sub_items && item.sub_items.length > 0) {
+        for (const sub of item.sub_items) {
+          await this.prisma.navigation_item.upsert({
+            where: { key: sub.key },
+            update: {
+              label: sub.label,
+              path: sub.path,
+              icon: sub.icon,
+              group_title: sub.group_title,
+              sort_order: sub.sort_order,
+              parent_id: parent.id,
+              permission_key: sub.permission_key,
+            },
+            create: {
+              key: sub.key,
+              label: sub.label,
+              path: sub.path,
+              icon: sub.icon,
+              group_title: sub.group_title,
+              sort_order: sub.sort_order,
+              parent_id: parent.id,
+              permission_key: sub.permission_key,
+            },
+          });
+        }
+      }
     }
   }
 }
