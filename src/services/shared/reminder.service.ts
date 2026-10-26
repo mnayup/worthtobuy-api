@@ -35,7 +35,6 @@ export class ReminderService {
             title: overdue ? 'Invoice melewati jatuh tempo' : 'Invoice segera jatuh tempo',
             message: `${invoice.invoice_number} • ${invoice.customer.full_name} • Sisa Rp${Number(invoice.outstanding_amount).toLocaleString('id-ID')}`,
             link: `/invoices/${invoice.id}`,
-            is_read: false,
           },
           create: {
             type: 'PAYMENT',
