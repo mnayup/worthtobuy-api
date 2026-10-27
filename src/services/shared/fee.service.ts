@@ -66,4 +66,30 @@ export class FeeService {
     const fee = matched.type === 'PERCENT' ? safeAmount * (matched.value / 100) : matched.value;
     return { fee: Math.round(fee), rule: matched };
   }
+
+  calculateItemsServiceFee(items: Array<Record<string, any>>, rules: FeeRule[]) {
+    let totalFee = 0;
+    const itemBreakdown: Array<{ unitPrice: number; quantity: number; unitFee: number; totalFee: number; rule: FeeRule }> = [];
+
+    for (const item of items) {
+      const unitPrice = Number(
+        item.unit_price_foreign ??
+        item.unitPriceForeign ??
+        item.target_price_idr ??
+        item.targetPriceIdr ??
+        item.price ??
+        0
+      );
+      const qty = Math.max(1, Number(item.quantity || 1));
+      const { fee: unitFee, rule } = this.calculateServiceFee(unitPrice, rules);
+      const subtotalFee = unitFee * qty;
+      totalFee += subtotalFee;
+      itemBreakdown.push({ unitPrice, quantity: qty, unitFee, totalFee: subtotalFee, rule });
+    }
+
+    return {
+      fee: Math.round(totalFee),
+      itemBreakdown,
+    };
+  }
 }

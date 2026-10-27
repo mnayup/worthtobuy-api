@@ -112,7 +112,8 @@ export class OrdersService {
     const isReseller = service_fee_mode === 'AUTO_RESELLER';
     const isAuto = service_fee_mode === 'AUTO' || service_fee_mode === 'AUTO_CUSTOMER' || isReseller;
     const rules = await this.feeService.getFeeRules(isReseller ? 'RESELLER' : 'CUSTOMER');
-    const automatic = this.feeService.calculateServiceFee(subtotalIdr(body.items || []), rules);
+    const itemsList = body.items || [];
+    const automatic = this.feeService.calculateItemsServiceFee(itemsList, rules);
     const resolvedServiceFee = isAuto ? automatic.fee : (body.service_fee ?? body.serviceFee ?? 0);
 
     const rawAdditionalFees = body.additional_fees ?? body.additionalFees;
@@ -235,7 +236,7 @@ export class OrdersService {
     const isReseller = service_fee_mode === 'AUTO_RESELLER';
     const isAuto = service_fee_mode === 'AUTO' || service_fee_mode === 'AUTO_CUSTOMER' || isReseller;
     const rules = await this.feeService.getFeeRules(isReseller ? 'RESELLER' : 'CUSTOMER');
-    const automatic = this.feeService.calculateServiceFee(subtotalIdr(items), rules);
+    const automatic = this.feeService.calculateItemsServiceFee(items, rules);
     const resolvedServiceFee = isAuto
       ? automatic.fee
       : (body.service_fee ?? body.serviceFee ?? current.service_fee);
