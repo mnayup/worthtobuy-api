@@ -229,64 +229,69 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
   }
 
   if (candidateShipment) {
-    // Attach order to candidate shipment
-    await prisma.shipment_order.upsert({
-      where: {
-        shipment_id_order_id: {
+    try {
+      // Attach order to candidate shipment
+      await prisma.shipment_order.upsert({
+        where: {
+          shipment_id_order_id: {
+            shipment_id: candidateShipment.id,
+            order_id: order.id,
+          },
+        },
+        create: {
           shipment_id: candidateShipment.id,
           order_id: order.id,
         },
-      },
-      create: {
-        shipment_id: candidateShipment.id,
-        order_id: order.id,
-      },
-      update: {},
-    });
+        update: {},
+      });
 
-    const allOrdersInShipment = [
-      ...candidateShipment.shipment_orders.map((so: any) => so.order),
-      order,
-    ];
-    const uniqueOrdersMap = new Map();
-    for (const ord of allOrdersInShipment) {
-      if (ord && !uniqueOrdersMap.has(ord.id)) {
-        uniqueOrdersMap.set(ord.id, ord);
+      const allOrdersInShipment = [
+        ...candidateShipment.shipment_orders.map((so: any) => so.order),
+        order,
+      ];
+      const uniqueOrdersMap = new Map();
+      for (const ord of allOrdersInShipment) {
+        if (ord && !uniqueOrdersMap.has(ord.id)) {
+          uniqueOrdersMap.set(ord.id, ord);
+        }
       }
+      const ordersList = Array.from(uniqueOrdersMap.values());
+
+      const allItems = ordersList.flatMap((o: any) => o.items || []);
+      const fullItemsSummary = allItems
+        .map(
+          (i: any) =>
+            `${i.quantity}x ${i.product?.name || i.manual_product_name || 'Item'}${
+              i.variation ? ` (${i.variation})` : ''
+            }${i.size ? ` (${i.size})` : ''}${i.color ? ` [${i.color}]` : ''}`
+        )
+        .join(', ');
+
+      const combinedShippingCost = ordersList.reduce(
+        (sum: number, o: any) => sum + Number(o.customer_shipping || 0),
+        0
+      );
+
+      const candidateAddress =
+        candidateShipment.address && candidateShipment.address.trim() !== '-'
+          ? candidateShipment.address
+          : address;
+
+      await prisma.shipment.update({
+        where: { id: candidateShipment.id },
+        data: {
+          shipping_cost: combinedShippingCost,
+          address: candidateAddress,
+          notes: fullItemsSummary
+            ? `Item to pack: ${fullItemsSummary}`
+            : candidateShipment.notes,
+        },
+      });
+      return;
+    } catch (err) {
+      // Fallback: If bundling fails for any reason, proceed to create a standalone shipment below
+      console.error(`[ensureShipmentForOrderHelper] Failed to bundle order ${order.id} into shipment ${candidateShipment.id}. Creating new shipment fallback.`, err);
     }
-    const ordersList = Array.from(uniqueOrdersMap.values());
-
-    const allItems = ordersList.flatMap((o: any) => o.items || []);
-    const fullItemsSummary = allItems
-      .map(
-        (i: any) =>
-          `${i.quantity}x ${i.product?.name || i.manual_product_name || 'Item'}${
-            i.variation ? ` (${i.variation})` : ''
-          }${i.size ? ` (${i.size})` : ''}${i.color ? ` [${i.color}]` : ''}`
-      )
-      .join(', ');
-
-    const combinedShippingCost = ordersList.reduce(
-      (sum: number, o: any) => sum + Number(o.customer_shipping || 0),
-      0
-    );
-
-    const candidateAddress =
-      candidateShipment.address && candidateShipment.address.trim() !== '-'
-        ? candidateShipment.address
-        : address;
-
-    await prisma.shipment.update({
-      where: { id: candidateShipment.id },
-      data: {
-        shipping_cost: combinedShippingCost,
-        address: candidateAddress,
-        notes: fullItemsSummary
-          ? `Item to pack: ${fullItemsSummary}`
-          : candidateShipment.notes,
-      },
-    });
-    return;
   }
 
   const isShopee = order.shipping_method === 'SHOPEE';

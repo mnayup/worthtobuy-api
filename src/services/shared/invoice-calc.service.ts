@@ -180,7 +180,14 @@ export class InvoiceCalcService {
           }
         } else if (link.order.status === 'WAITING_SETTLEMENT' || link.order.status === 'READY_TO_SHIP') {
           if (orderOutstanding <= 0) {
-            const ship = await this.prisma.shipment.findFirst({ where: { order_id: link.order_id } });
+            const ship = await this.prisma.shipment.findFirst({
+              where: {
+                OR: [
+                  { order_id: link.order_id },
+                  { shipment_orders: { some: { order_id: link.order_id } } },
+                ],
+              },
+            });
             if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {
               nextStatus = 'SHIPPED';
               await this.prisma.shipment.update({
@@ -276,7 +283,14 @@ export class InvoiceCalcService {
         }
       } else if (order.status === 'WAITING_SETTLEMENT' || order.status === 'READY_TO_SHIP') {
         if (outstanding_amount <= 0) {
-          const ship = await this.prisma.shipment.findFirst({ where: { order_id } });
+          const ship = await this.prisma.shipment.findFirst({
+            where: {
+              OR: [
+                { order_id },
+                { shipment_orders: { some: { order_id } } },
+              ],
+            },
+          });
           if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {
             nextStatus = 'SHIPPED';
             await this.prisma.shipment.update({
