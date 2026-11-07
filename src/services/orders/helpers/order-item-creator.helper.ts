@@ -96,6 +96,7 @@ export async function createOrderItemWithProduct(
       quantity: Number(item.quantity || 1),
       unit_price_foreign: unitPrice,
       target_price_idr: targetPrice,
+      bundle_name: item.bundle_name || item.bundleName || null,
       purchase_notes: item.purchase_notes || item.purchaseNotes || null,
       photo_url: item.photo_url || item.photoUrl || null,
     },

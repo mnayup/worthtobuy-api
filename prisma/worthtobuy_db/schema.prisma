@@ -342,6 +342,7 @@ model product {
   reserved_quantity   Int                  @default(0)
   buy_price           Decimal              @default(0) @db.Decimal(18, 2)
   selling_price       Decimal              @default(0) @db.Decimal(18, 2)
+  variant_prices      Json?
   low_stock_threshold Int                  @default(0)
   is_active           Boolean              @default(true)
   notes               String?
@@ -431,6 +432,7 @@ model order_item {
   quantity            Int                   @default(1)
   unit_price_foreign  Decimal               @db.Decimal(18, 2)
   target_price_idr    Decimal               @db.Decimal(18, 2)
+  bundle_name         String?
   purchase_status     PurchaseStatus        @default(PENDING)
   purchase_notes      String?
   photo_url           String?

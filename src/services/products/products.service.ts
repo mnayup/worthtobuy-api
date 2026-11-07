@@ -110,6 +110,8 @@ export class ProductsService {
 
     const primaryImage = imageUrls.length > 0 ? imageUrls[0] : (rawImageUrl ? String(rawImageUrl).trim() : null);
 
+    const variantPrices = raw.variant_prices !== undefined ? raw.variant_prices : raw.variantPrices;
+
     const data: any = {
       sku: raw.sku ? String(raw.sku).trim() : sequence('SKU'),
       name: String(raw.name || '').trim(),
@@ -126,6 +128,7 @@ export class ProductsService {
       stock_quantity: Number(raw.stock_quantity ?? raw.stockQuantity ?? 0),
       buy_price: Number(raw.buy_price ?? raw.buyPrice ?? 0),
       selling_price: Number(raw.selling_price ?? raw.sellingPrice ?? 0),
+      variant_prices: variantPrices !== undefined ? variantPrices : null,
       low_stock_threshold: Number(raw.low_stock_threshold ?? raw.lowStockThreshold ?? 0),
       notes: raw.notes ? String(raw.notes).trim() : null,
       period_id: raw.period_id || raw.periodId ? Number(raw.period_id || raw.periodId) : null,
@@ -180,6 +183,7 @@ export class ProductsService {
     const buyPrice = raw.buy_price !== undefined ? raw.buy_price : raw.buyPrice;
     const sellingPrice = raw.selling_price !== undefined ? raw.selling_price : raw.sellingPrice;
     const lowStockThreshold = raw.low_stock_threshold !== undefined ? raw.low_stock_threshold : raw.lowStockThreshold;
+    const variantPrices = raw.variant_prices !== undefined ? raw.variant_prices : raw.variantPrices;
     const periodId = raw.period_id !== undefined ? raw.period_id : raw.periodId;
     const isActive = raw.is_active !== undefined ? raw.is_active : raw.isActive;
 
@@ -210,6 +214,7 @@ export class ProductsService {
       ...(stockMode !== undefined ? { stock_mode: stockMode } : {}),
       ...(buyPrice !== undefined ? { buy_price: Number(buyPrice || 0) } : {}),
       ...(sellingPrice !== undefined ? { selling_price: Number(sellingPrice || 0) } : {}),
+      ...(variantPrices !== undefined ? { variant_prices: variantPrices } : {}),
       ...(lowStockThreshold !== undefined ? { low_stock_threshold: Number(lowStockThreshold || 0) } : {}),
       ...(raw.notes !== undefined ? { notes: raw.notes ? String(raw.notes).trim() : null } : {}),
       ...(periodId !== undefined ? { period_id: periodId ? Number(periodId) : null } : {}),

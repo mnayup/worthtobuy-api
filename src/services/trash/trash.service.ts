@@ -65,7 +65,11 @@ export class TrashService {
     const userIds = [...new Set(all.map(x => x.deleted_by_id).filter(Boolean))];
     const deleters = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true } }) : [];
     const names = new Map(deleters.map((x: any) => [x.id, x.name]));
-    const enriched = all.map(x => ({ ...x, deletedByName: names.get(x.deleted_by_id) || '-' }));
+    const enriched = all.map(x => ({
+      ...x,
+      deletedAt: x.deleted_at,
+      deletedByName: names.get(x.deleted_by_id) || '-',
+    }));
 
     const filtered = enriched.filter((row: any) => {
       if (requestedType && row.entityType !== requestedType) return false;
