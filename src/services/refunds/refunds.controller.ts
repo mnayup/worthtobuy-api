@@ -11,9 +11,15 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 @Controller('refunds')
 export class RefundsController {
   constructor(
-    private refundsService: RefundsService,
-    private prisma: PrismaService,
+    private readonly refundsService: RefundsService,
+    private readonly prisma: PrismaService,
   ) { }
+
+  @Get('summary')
+  @RequirePermissions('refunds:view')
+  async getSummary() {
+    return this.refundsService.getSummary();
+  }
 
   @Get()
   @RequirePermissions('refunds:view')

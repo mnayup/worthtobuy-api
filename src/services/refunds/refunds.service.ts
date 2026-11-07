@@ -3,118 +3,50 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { CustomersService } from '../customers/customers.service';
 import { sequence } from '../../common/utils/http.utils';
-
-function cleanRefundData(body: any): any {
-  if (!body || typeof body !== 'object') return {};
-  const cleaned: any = {};
-
-  if (body.refund_number !== undefined || body.refundNumber !== undefined) {
-    const val = body.refund_number !== undefined ? body.refund_number : body.refundNumber;
-    cleaned.refund_number = val ? String(val).trim() : undefined;
-  }
-  if (body.order_id !== undefined || body.orderId !== undefined) {
-    const val = body.order_id !== undefined ? body.order_id : body.orderId;
-    cleaned.order_id = val ? Number(val) : null;
-  }
-  if (body.invoice_id !== undefined || body.invoiceId !== undefined) {
-    const val = body.invoice_id !== undefined ? body.invoice_id : body.invoiceId;
-    cleaned.invoice_id = val ? Number(val) : null;
-  }
-  if (body.customer_id !== undefined || body.customerId !== undefined) {
-    const val = body.customer_id !== undefined ? body.customer_id : body.customerId;
-    cleaned.customer_id = val ? Number(val) : null;
-  }
-  if (body.refund_type !== undefined || body.refundType !== undefined) {
-    cleaned.refund_type = body.refund_type !== undefined ? body.refund_type : body.refundType;
-  }
-  if (body.amount !== undefined) {
-    cleaned.amount = Number(body.amount);
-  }
-  if (body.reason !== undefined) {
-    cleaned.reason = String(body.reason || '').trim();
-  }
-  if (body.status !== undefined) {
-    cleaned.status = body.status;
-  }
-  if (body.source !== undefined) {
-    cleaned.source = body.source;
-  }
-  if (body.refunded_at !== undefined || body.refundedAt !== undefined) {
-    const val = body.refunded_at !== undefined ? body.refunded_at : body.refundedAt;
-    cleaned.refunded_at = val ? new Date(val) : null;
-  }
-  if (body.notes !== undefined) {
-    cleaned.notes = body.notes ? String(body.notes).trim() : null;
-  }
-  if (body.bank_name !== undefined || body.bankName !== undefined) {
-    const val = body.bank_name !== undefined ? body.bank_name : body.bankName;
-    cleaned.bank_name = val ? String(val).trim() : null;
-  }
-  if (body.account_number !== undefined || body.accountNumber !== undefined) {
-    const val = body.account_number !== undefined ? body.account_number : body.accountNumber;
-    cleaned.account_number = val ? String(val).trim() : null;
-  }
-  if (body.account_holder !== undefined || body.accountHolder !== undefined) {
-    const val = body.account_holder !== undefined ? body.account_holder : body.accountHolder;
-    cleaned.account_holder = val ? String(val).trim() : null;
-  }
-  if (body.proof_url !== undefined || body.proofUrl !== undefined) {
-    const val = body.proof_url !== undefined ? body.proof_url : body.proofUrl;
-    cleaned.proof_url = val ? String(val).trim() : null;
-  }
-  if (body.transfer_notes !== undefined || body.transferNotes !== undefined) {
-    const val = body.transfer_notes !== undefined ? body.transfer_notes : body.transferNotes;
-    cleaned.transfer_notes = val ? String(val).trim() : null;
-  }
-
-  return cleaned;
-}
+import {
+  cleanRefundData,
+  buildRefundWhereClause,
+  sortRefundRows,
+  resolveRefundTargets,
+  shouldValidateDepositRelease,
+  buildRefundUpdatePayload,
+} from './helpers/refund-data.helper';
 
 @Injectable()
 export class RefundsService {
   constructor(
-    private prisma: PrismaService,
-    private invoiceCalcService: InvoiceCalcService,
-    private customersService: CustomersService,
+    private readonly prisma: PrismaService,
+    private readonly invoiceCalcService: InvoiceCalcService,
+    private readonly customersService: CustomersService,
   ) { }
+
+  async getSummary() {
+    const counts = await this.prisma.refund.groupBy({
+      by: ['status'],
+      where: {
+        deleted_at: null,
+        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }],
+      },
+      _count: { id: true },
+    });
+    const total = await this.prisma.refund.count({
+      where: {
+        deleted_at: null,
+        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }],
+      },
+    });
+    const summary: Record<string, number> = { TOTAL: total };
+    for (const c of counts) {
+      summary[c.status] = c._count.id;
+    }
+    return summary;
+  }
 
   async findAll(query: any) {
     const page = Math.max(1, Number(query.page || 1));
     const limit = Math.min(100, Math.max(1, Number(query.limit || 10)));
     const skip = (page - 1) * limit;
-    const search = String(query.search || '').trim().slice(0, 100);
-    const status = query.status && query.status !== 'ALL' ? String(query.status) : undefined;
-    const source = query.source && query.source !== 'ALL' ? String(query.source) : undefined;
-    const refund_type = query.refund_type && query.refund_type !== 'ALL' ? String(query.refund_type) : undefined;
-
-    const where: any = {
-      deleted_at: null,
-      ...(status ? { status } : {}),
-      ...(source ? { source } : {}),
-      ...(refund_type ? { refund_type } : {}),
-      AND: [
-        { OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }] },
-        ...(search
-          ? [
-            {
-              OR: [
-                { refund_number: { contains: search, mode: 'insensitive' } },
-                { reason: { contains: search, mode: 'insensitive' } },
-                { invoice: { invoice_number: { contains: search, mode: 'insensitive' } } },
-                { order: { order_number: { contains: search, mode: 'insensitive' } } },
-                { invoice: { customer: { full_name: { contains: search, mode: 'insensitive' } } } },
-                { order: { customer: { full_name: { contains: search, mode: 'insensitive' } } } },
-                { customer: { full_name: { contains: search, mode: 'insensitive' } } },
-                { invoice: { customer: { whatsapp: { contains: search } } } },
-                { order: { customer: { whatsapp: { contains: search } } } },
-                { customer: { whatsapp: { contains: search } } },
-                { notes: { contains: search, mode: 'insensitive' } },
-              ],
-            },
-          ]
-          : []),
-      ],
-    };
+    const where = buildRefundWhereClause(query);
 
     const [rawRows, total] = await Promise.all([
       this.prisma.refund.findMany({
@@ -128,22 +60,7 @@ export class RefundsService {
       this.prisma.refund.count({ where }),
     ]);
 
-    // Sequence based on status priority: REQUESTED (1) -> ON_PROCESS/APPROVED (2) -> PAID (3) -> REJECTED (4), then newest created_at
-    const statusPriority: Record<string, number> = {
-      REQUESTED: 1,
-      ON_PROCESS: 2,
-      APPROVED: 2,
-      PAID: 3,
-      REJECTED: 4,
-    };
-
-    const sorted = [...rawRows].sort((a, b) => {
-      const pA = statusPriority[a.status] || 99;
-      const pB = statusPriority[b.status] || 99;
-      if (pA !== pB) return pA - pB;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-
+    const sorted = sortRefundRows(rawRows);
     const data = sorted.slice(skip, skip + limit);
 
     return { data, total, page, limit };
@@ -194,58 +111,24 @@ export class RefundsService {
     return data;
   }
 
-  async update(id: number, body: any) {
-    const current = await this.prisma.refund.findUniqueOrThrow({
-      where: { id },
-      include: { order: true, invoice: true },
-    });
-    const cleaned = cleanRefundData(body);
-    const resolvedOrderId = cleaned.order_id === undefined ? current.order_id : cleaned.order_id || null;
-    const resolvedInvoiceId = cleaned.invoice_id === undefined ? current.invoice_id : cleaned.invoice_id || null;
-    
-    let customer_id = current.customer_id || current.order?.customer_id || current.invoice?.customer_id || null;
-    if (cleaned.customer_id) customer_id = Number(cleaned.customer_id);
-
-    if (!resolvedOrderId && !resolvedInvoiceId && !customer_id) {
-      throw new BadRequestException('Pilih minimal satu target refund: pelanggan, invoice, atau pesanan.');
+  private async assertDepositCanBeReleased(current: any, cleaned: any, customerId: number | null) {
+    if (!customerId || !shouldValidateDepositRelease(current, cleaned)) {
+      return;
     }
-
-    // Customer ID already resolved above
-
-    // If changing from PAID + CUSTOMER_DEPOSIT to REJECTED or DIRECT_TRANSFER, check available deposit
-    if (
-      customer_id &&
-      current.status === 'PAID' &&
-      current.refund_type === 'CUSTOMER_DEPOSIT' &&
-      (cleaned.status === 'REJECTED' || (cleaned.refund_type && cleaned.refund_type !== 'CUSTOMER_DEPOSIT'))
-    ) {
-      const balance = await this.customersService.getDepositBalance(customer_id);
-      if (balance.availableDeposit < Number(current.amount)) {
-        throw new BadRequestException(
-          `Sebagian saldo deposit (${current.refund_number}) telah terpakai pada invoice aktif pelanggan. Batalkan pemakaian deposit di invoice terlebih dahulu.`
-        );
-      }
+    const balance = await this.customersService.getDepositBalance(customerId);
+    if (balance.availableDeposit < Number(current.amount)) {
+      throw new BadRequestException(
+        `Sebagian saldo deposit (${current.refund_number}) telah terpakai pada invoice aktif pelanggan. Batalkan pemakaian deposit di invoice terlebih dahulu.`
+      );
     }
+  }
 
-    if (current.auto_generated && !body.is_processing && !body.status && cleaned.amount !== undefined) {
-      throw new BadRequestException('Refund yang dibuat otomatis oleh sistem tidak dapat diubah secara manual.');
-    }
-
-    const paidAutoOverpayment = cleaned.status === 'PAID' && current.auto_generated && current.source === 'OVERPAYMENT';
-    const data = await this.prisma.refund.update({
-      where: { id },
-      data: {
-        ...cleaned,
-        order_id: cleaned.order_id === undefined ? undefined : cleaned.order_id || null,
-        invoice_id: cleaned.invoice_id === undefined ? undefined : cleaned.invoice_id || null,
-        customer_id: customer_id || undefined,
-        refund_type: cleaned.refund_type !== undefined ? cleaned.refund_type : undefined,
-        refunded_at: cleaned.status === 'PAID' && !cleaned.refunded_at ? new Date() : cleaned.refunded_at,
-        ...(paidAutoOverpayment ? { source_key: null } : {}),
-      },
-      include: { customer: true, invoice: { include: { customer: true } }, order: { include: { customer: true } } },
-    });
-
+  private async syncRefundSideEffects(
+    current: any,
+    data: any,
+    cleaned: any,
+    customerId: number | null
+  ) {
     if (cleaned.status === 'PAID' && data.order_id) {
       await this.prisma.order.update({ where: { id: data.order_id }, data: { status: 'REFUND' } });
     }
@@ -255,9 +138,37 @@ export class RefundsService {
     if (data.invoice_id) {
       await this.invoiceCalcService.refreshInvoicePayment(data.invoice_id);
     }
-    if (customer_id) {
-      await this.customersService.recalculateCustomerDeposit(customer_id);
+    if (customerId) {
+      await this.customersService.recalculateCustomerDeposit(customerId);
     }
+  }
+
+  async update(id: number, body: any) {
+    const current = await this.prisma.refund.findUniqueOrThrow({
+      where: { id },
+      include: { order: true, invoice: true },
+    });
+    const cleaned = cleanRefundData(body);
+    const targets = resolveRefundTargets(current, cleaned);
+
+    if (!targets.resolvedOrderId && !targets.resolvedInvoiceId && !targets.customerId) {
+      throw new BadRequestException('Pilih minimal satu target refund: pelanggan, invoice, atau pesanan.');
+    }
+
+    await this.assertDepositCanBeReleased(current, cleaned, targets.customerId);
+
+    if (current.auto_generated && !body.is_processing && !body.status && cleaned.amount !== undefined) {
+      throw new BadRequestException('Refund yang dibuat otomatis oleh sistem tidak dapat diubah secara manual.');
+    }
+
+    const updateData = buildRefundUpdatePayload(current, cleaned, targets);
+    const data = await this.prisma.refund.update({
+      where: { id },
+      data: updateData,
+      include: { customer: true, invoice: { include: { customer: true } }, order: { include: { customer: true } } },
+    });
+
+    await this.syncRefundSideEffects(current, data, cleaned, targets.customerId);
     return data;
   }
 
