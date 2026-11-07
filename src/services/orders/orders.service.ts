@@ -56,7 +56,11 @@ export class OrdersService {
         take: limit,
         orderBy: { order_date: 'desc' },
         include: {
-          customer: true,
+          customer: {
+            include: {
+              whatsapp_group: true,
+            },
+          },
           period: true,
           items: { include: { product: true } },
           invoice_links: { include: { invoice: true } },
