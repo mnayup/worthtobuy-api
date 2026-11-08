@@ -4,6 +4,7 @@ import {
   findPublicTargetOrder,
   buildTrackingTimelineResponse,
 } from './helpers/public-tracking.helper';
+import { verifyAndFetchCustomerInvoices } from './helpers/public-customer-tracking.helper';
 import {
   fetchPublicInvoiceData,
   createPublicPaymentProof,
@@ -107,6 +108,14 @@ export class PublicService {
       clean
     );
     return buildTrackingTimelineResponse(targetOrder, invoice);
+  }
+
+  async trackCustomerInvoices(customerCode: string, phoneLast5: string) {
+    return verifyAndFetchCustomerInvoices(
+      this.prisma,
+      customerCode,
+      phoneLast5
+    );
   }
 
   async getPublicInvoice(invoiceNumber: string) {

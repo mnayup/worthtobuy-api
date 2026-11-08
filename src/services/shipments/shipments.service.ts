@@ -343,7 +343,7 @@ export class ShipmentsService {
           cleaned.notes
         );
       }
-      if (cleaned.tracking_number && ['WAITING_PACKING', 'PACKED', 'READY'].includes(current.status)) {
+      if (cleaned.tracking_number && ['PACKED', 'READY'].includes(current.status)) {
         if (!cleaned.status) {
           cleaned.status = 'IN_TRANSIT';
           targetStatus = 'IN_TRANSIT';

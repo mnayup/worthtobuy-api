@@ -67,9 +67,44 @@ export async function createOrderItemWithProduct(
 
   const activeProductId = item.product_id || item.productId;
   let sourceType = item.source_type || item.sourceType || 'CATALOG';
+  let resolvedProductSellingPrice = 0;
   if (activeProductId) {
-    const product = await tx.product.findUnique({ where: { id: activeProductId } });
-    if (product && product.stock_mode === 'READY_STOCK') {
+    const product = await tx.product.findUnique({
+      where: { id: activeProductId },
+      include: { period: true },
+    });
+    if (product) {
+      if (product.stock_mode === 'READY_STOCK' || product.period?.type === 'LIVE_SHOPPING') {
+        sourceType = 'READY_STOCK';
+      }
+      resolvedProductSellingPrice = Number(product.selling_price || 0);
+      const vpRaw: any = product.variant_prices;
+      const vRules: any[] = Array.isArray(vpRaw)
+        ? vpRaw
+        : Array.isArray(vpRaw?.variantRules)
+          ? vpRaw.variantRules
+          : [];
+      if (vRules.length > 0) {
+        const iv = String(item.variation || '').trim().toLowerCase();
+        const isz = String(item.size || '').trim().toLowerCase();
+        for (const r of vRules) {
+          const rVars = (Array.isArray(r.variants) ? r.variants : []).map((x: any) => String(x).trim().toLowerCase());
+          const rSizes = (Array.isArray(r.sizes) ? r.sizes : []).map((x: any) => String(x).trim().toLowerCase());
+          const vMatch = rVars.length === 0 || (iv && rVars.includes(iv));
+          const sMatch = rSizes.length === 0 || (isz && rSizes.includes(isz));
+          if (vMatch && sMatch && Number(r.sellingPrice || 0) > 0) {
+            resolvedProductSellingPrice = Number(r.sellingPrice);
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (fallbackPeriodId && sourceType !== 'READY_STOCK') {
+    const fallbackPeriod = await tx.jastip_period.findUnique({
+      where: { id: Number(fallbackPeriodId) },
+    });
+    if (fallbackPeriod?.type === 'LIVE_SHOPPING' || fallbackPeriod?.code === 'READY-STOCK') {
       sourceType = 'READY_STOCK';
     }
   }
@@ -77,8 +112,10 @@ export async function createOrderItemWithProduct(
     item.fulfillment_status ||
     item.fulfillmentStatus ||
     (sourceType === 'READY_STOCK' ? 'AVAILABLE' : 'PENDING');
+  const purchaseStatus = sourceType === 'READY_STOCK' ? 'PURCHASED' : 'PENDING';
   const keptUntil = fulfillmentStatus === 'KEPT' ? item.kept_until || item.keptUntil : null;
-  const unitPrice = Number(item.unit_price_foreign ?? item.unitPriceForeign ?? 0);
+  const rawInputPrice = Number(item.unit_price_foreign ?? item.unitPriceForeign ?? 0);
+  const unitPrice = rawInputPrice > 0 ? rawInputPrice : resolvedProductSellingPrice;
   const targetPrice = Number(item.target_price_idr ?? item.targetPriceIdr ?? unitPrice ?? 0);
 
   const row = await tx.order_item.create({
@@ -89,6 +126,7 @@ export async function createOrderItemWithProduct(
       brand_name: item.brand_name || item.brandName || null,
       source_type: sourceType as any,
       fulfillment_status: fulfillmentStatus as any,
+      purchase_status: purchaseStatus as any,
       kept_until: keptUntil,
       variation: item.variation || null,
       size: item.size || null,

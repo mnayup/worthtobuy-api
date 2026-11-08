@@ -62,15 +62,126 @@ export class ProductsService {
     };
 
     const [rows, total] = await Promise.all([
-      this.prisma.product.findMany({ where, skip, take: limit, orderBy: { created_at: 'desc' } }),
+      this.prisma.product.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { created_at: 'desc' },
+        include: {
+          period: { select: { id: true, name: true, code: true, type: true } },
+          purchases: {
+            where: { status: 'PURCHASED', order_item_id: null },
+            select: { variation: true, size: true, quantity: true },
+          },
+          order_items: {
+            where: {
+              fulfillment_status: { not: 'UNAVAILABLE' },
+              order: { deleted_at: null, status: { not: 'CANCELLED' } },
+            },
+            select: { variation: true, size: true, quantity: true },
+          },
+        },
+      }),
       this.prisma.product.count({ where }),
     ]);
 
+    const parseTags = (raw?: string | null): string[] =>
+      raw
+        ? String(raw)
+            .split(/[,;\n]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+
+    const enrichedRows = rows.map((row: any) => {
+      const totalAvail = Math.max(
+        0,
+        Number(row.stock_quantity || 0) - Number(row.reserved_quantity || 0)
+      );
+      const manualPurchases = Array.isArray(row.purchases) ? row.purchases : [];
+      const activeOrderItems = Array.isArray(row.order_items) ? row.order_items : [];
+
+      let availableVariantStocks: Array<{
+        variant: string;
+        size: string;
+        available: number;
+      }> = [];
+
+      if (manualPurchases.length > 0) {
+        const stockMap = new Map<
+          string,
+          { variant: string; size: string; purchased: number; ordered: number }
+        >();
+
+        for (const p of manualPurchases) {
+          const v = String(p.variation || '').trim();
+          const s = String(p.size || '').trim();
+          const key = `${v.toLowerCase()}___${s.toLowerCase()}`;
+          if (!stockMap.has(key)) {
+            stockMap.set(key, { variant: v, size: s, purchased: 0, ordered: 0 });
+          }
+          stockMap.get(key)!.purchased += Math.max(0, Number(p.quantity || 0));
+        }
+
+        for (const oi of activeOrderItems) {
+          const v = String(oi.variation || '').trim();
+          const s = String(oi.size || '').trim();
+          const exactKey = `${v.toLowerCase()}___${s.toLowerCase()}`;
+          const qty = Math.max(0, Number(oi.quantity || 0));
+          if (stockMap.has(exactKey)) {
+            stockMap.get(exactKey)!.ordered += qty;
+          } else {
+            // Fallback match if variant or size matches a single bucket
+            const fallbackEntry = Array.from(stockMap.values()).find(
+              (entry) =>
+                (entry.variant.toLowerCase() === v.toLowerCase() || !entry.variant || !v) &&
+                (entry.size.toLowerCase() === s.toLowerCase() || !entry.size || !s)
+            );
+            if (fallbackEntry) {
+              fallbackEntry.ordered += qty;
+            }
+          }
+        }
+
+        availableVariantStocks = Array.from(stockMap.values())
+          .map((entry) => ({
+            variant: entry.variant,
+            size: entry.size,
+            available: Math.min(
+              totalAvail,
+              Math.max(0, entry.purchased - entry.ordered)
+            ),
+          }))
+          .filter((entry) => entry.available > 0);
+      } else if (totalAvail > 0) {
+        const variants = parseTags(row.variant);
+        const sizes = parseTags(row.size);
+        const vList = variants.length > 0 ? variants : [''];
+        const sList = sizes.length > 0 ? sizes : [''];
+
+        for (const v of vList) {
+          for (const s of sList) {
+            availableVariantStocks.push({
+              variant: v,
+              size: s,
+              available: totalAvail,
+            });
+          }
+        }
+      }
+
+      const { purchases, order_items, ...rest } = row;
+      return {
+        ...rest,
+        available_variant_stocks: availableVariantStocks,
+      };
+    });
+
     const data = lowStock
-      ? rows.filter(
+      ? enrichedRows.filter(
         row => ['READY_STOCK', 'BOTH'].includes(row.stock_mode) && row.stock_quantity - row.reserved_quantity <= row.low_stock_threshold,
       )
-      : rows;
+      : enrichedRows;
 
     return { data, total: lowStock ? data.length : total, page, limit };
   }

@@ -1,5 +1,6 @@
 import { PrismaService } from '../../../config/prisma/prisma.service';
 import { RefundService } from '../../shared/refund.service';
+import { StockService } from '../../shared/stock.service';
 import {
   handlePurchasedTransitionHelper,
   handleUnavailableTransitionHelper,
@@ -57,7 +58,8 @@ export async function updateConsolidatedPurchaseHelper(
   refundService: RefundService,
   purchaseNumber: string,
   body: any,
-  userId?: number
+  userId?: number,
+  stockService?: StockService
 ) {
   const submittedItemIds = (body.items || [])
     .map((it: any) => Number(it.id || it.purchase_id))
@@ -75,6 +77,7 @@ export async function updateConsolidatedPurchaseHelper(
       ],
     },
     include: {
+      period: true,
       order_item: {
         include: { order: { include: { customer: true } } },
       },
@@ -94,7 +97,7 @@ export async function updateConsolidatedPurchaseHelper(
   });
 
   for (const row of rows) {
-    const itInput = itemMap.get(row.order_item_id) || itemMap.get(row.id);
+    const itInput = (row.order_item_id ? itemMap.get(row.order_item_id) : undefined) || itemMap.get(row.id);
     const isRejected = Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE');
     const isBought = Boolean(itInput?.is_bought ?? !isRejected);
     const rawKeptUntil = itInput?.kept_until !== undefined ? itInput.kept_until : itInput?.keptUntil;
@@ -109,6 +112,42 @@ export async function updateConsolidatedPurchaseHelper(
       itInput?.actual_price !== undefined
         ? Number(itInput.actual_price)
         : Number(row.actual_price) / (row.quantity || 1);
+
+    // Handle manual Live Shopping purchase (no order_item_id)
+    if (!row.order_item_id || !row.order_item) {
+      const targetStatus = isRejected || allocatedQty <= 0 ? 'UNAVAILABLE' : isBought ? 'PURCHASED' : 'WAITING_PURCHASE';
+      const nextQty = Math.max(0, allocatedQty);
+      const nextActual = targetStatus === 'UNAVAILABLE' ? 0 : unitPrice * (nextQty || row.quantity);
+      const est = Number(row.estimated_price);
+
+      await prisma.purchase.update({
+        where: { id: row.id },
+        data: {
+          ...commonData,
+          ...(nextQty > 0 ? { quantity: nextQty } : {}),
+          status: targetStatus as any,
+          actual_price: nextActual,
+          price_difference: targetStatus === 'UNAVAILABLE' ? 0 : nextActual - est,
+        },
+      });
+
+      if (stockService && row.product_id && row.period?.type === 'LIVE_SHOPPING') {
+        const oldEffectiveQty = row.status === 'PURCHASED' ? Number(row.quantity || 0) : 0;
+        const newEffectiveQty = targetStatus === 'PURCHASED' ? (nextQty || Number(row.quantity || 0)) : 0;
+        const delta = newEffectiveQty - oldEffectiveQty;
+        if (delta !== 0) {
+          await stockService.addStockFromPurchase(
+            prisma,
+            row.product_id,
+            delta,
+            userId,
+            String(row.id),
+            'Penyesuaian stok dari pembaruan pembelian Live Shopping.'
+          );
+        }
+      }
+      continue;
+    }
 
     const order = row.order_item.order;
     const fromStatus = row.order_item.fulfillment_status;

@@ -3,13 +3,15 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
 
   const primary = purchases[0];
   const items = purchases.map((p) => {
+    const isManualPurchase = !p.order_item_id;
     const item = p.order_item || {};
     const order = item.order || {};
     const customer = order.customer || {};
 
-    const isPriorityCustomer = customer.segment === 'PRIORITY';
+    const isPriorityCustomer = isManualPurchase ? true : customer.segment === 'PRIORITY';
     const paidAmount = Number(order.paid_amount || 0);
     const hasPaidDp =
+      isManualPurchase ||
       paidAmount > 0 ||
       ['DP_RECEIVED', 'WAITING_PURCHASE', 'WAITING_SETTLEMENT', 'PAID'].includes(order.status);
     const isEligibleToBuy = isPriorityCustomer || hasPaidDp;
@@ -21,14 +23,18 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
       id: p.id,
       purchase_id: p.id,
       order_item_id: p.order_item_id,
-      order_id: order.id,
-      order_number: order.order_number || `ORD-${order.id}`,
-      customer_id: customer.id,
-      customer_name: customer.full_name || 'Customer',
+      order_id: order.id || null,
+      order_number: isManualPurchase
+        ? 'LIVE-SHOPPING'
+        : order.order_number || `ORD-${order.id}`,
+      customer_id: customer.id || null,
+      customer_name: isManualPurchase
+        ? 'Live Shopping Stock'
+        : customer.full_name || 'Customer',
       customer_whatsapp: customer.whatsapp || '',
-      customer_segment: customer.segment || 'REGULAR',
+      customer_segment: isManualPurchase ? 'PRIORITY' : customer.segment || 'REGULAR',
       is_priority_customer: isPriorityCustomer,
-      order_status: order.status || 'NEW',
+      order_status: isManualPurchase ? 'PURCHASED' : order.status || 'NEW',
       order_paid_amount: paidAmount,
       order_total_bill: Number(order.total_bill || 0),
       order_outstanding_amount: Number(order.outstanding_amount || 0),
@@ -37,16 +43,22 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
       product_id: p.product_id,
       product_name: productName,
       brand_name: p.brand_name || item.brand_name || '-',
-      variation: item.variation || null,
-      size: item.size || null,
+      variation: p.variation || item.variation || p.product?.variant || null,
+      size: p.size || item.size || p.product?.size || null,
       color: item.color || null,
       quantity: Number(p.quantity || 1),
       estimated_price: Number(p.estimated_price || 0),
       actual_price: Number(p.actual_price || 0),
       price_difference: Number(p.price_difference || 0),
       status: p.status,
-      fulfillment_status: item.fulfillment_status || 'PENDING',
-      purchase_status: item.purchase_status || 'PENDING',
+      fulfillment_status: isManualPurchase
+        ? p.status === 'PURCHASED'
+          ? 'AVAILABLE'
+          : 'PENDING'
+        : item.fulfillment_status || 'PENDING',
+      purchase_status: isManualPurchase
+        ? p.status
+        : item.purchase_status || 'PENDING',
       kept_until: item.kept_until || null,
     };
   });

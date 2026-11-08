@@ -6,10 +6,14 @@ export class StockService {
   constructor(private prisma: PrismaService) { }
 
   async reserveReadyStock(db: any, productId: number, quantity: number, userId?: number, referenceId?: string) {
-    const product = await db.product.findUniqueOrThrow({ where: { id: productId } });
+    const product = await db.product.findUniqueOrThrow({
+      where: { id: productId },
+      include: { period: true },
+    });
     const stockMode = product.stock_mode ?? product.stockMode;
-    if (!['READY_STOCK', 'BOTH'].includes(stockMode)) {
-      throw new BadRequestException(`${product.name} bukan produk ready stock.`);
+    const isLiveShopping = product.period?.type === 'LIVE_SHOPPING';
+    if (!['READY_STOCK', 'BOTH'].includes(stockMode) && !isLiveShopping) {
+      throw new BadRequestException(`${product.name} bukan produk ready stock / live shopping.`);
     }
     const stockQty = Number(product.stock_quantity ?? product.stockQuantity ?? 0);
     const reservedQty = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0);
@@ -31,6 +35,37 @@ export class StockService {
         reference_type: 'ORDER_ITEM',
         reference_id: referenceId,
         notes: 'Stok dialokasikan untuk pesanan.',
+        user_id: userId,
+      },
+    });
+    return updated;
+  }
+
+  async addStockFromPurchase(
+    db: any,
+    productId: number,
+    quantityDelta: number,
+    userId?: number,
+    referenceId?: string,
+    notes = 'Penambahan stok dari pembelian Live Shopping.'
+  ) {
+    if (quantityDelta === 0) return null;
+    const product = await db.product.findUniqueOrThrow({ where: { id: productId } });
+    const currentStock = Number(product.stock_quantity ?? product.stockQuantity ?? 0);
+    const nextStock = Math.max(0, currentStock + quantityDelta);
+    const updated = await db.product.update({
+      where: { id: productId },
+      data: { stock_quantity: nextStock },
+    });
+    await db.inventory_movement.create({
+      data: {
+        product_id: productId,
+        movement_type: quantityDelta > 0 ? 'IN' : 'ADJUSTMENT',
+        quantity: quantityDelta,
+        balance_after: nextStock,
+        reference_type: 'PURCHASE',
+        reference_id: referenceId,
+        notes,
         user_id: userId,
       },
     });

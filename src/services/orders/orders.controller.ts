@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -46,6 +46,22 @@ export class OrdersController {
   @Put(':id')
   @Roles('OWNER', 'ADMIN')
   async update(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
+    const data = await this.ordersService.update(Number(id), body, userId);
+    await auditLog(this.prisma, userId, 'UPDATE', 'Order', String(data.id), body, req.ip);
+    return data;
+  }
+
+  @Patch(':id/status')
+  @Roles('OWNER', 'ADMIN')
+  async patchStatus(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
+    const data = await this.ordersService.update(Number(id), { status: body.status }, userId);
+    await auditLog(this.prisma, userId, 'UPDATE', 'Order', String(data.id), body, req.ip);
+    return data;
+  }
+
+  @Patch(':id')
+  @Roles('OWNER', 'ADMIN')
+  async patch(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
     const data = await this.ordersService.update(Number(id), body, userId);
     await auditLog(this.prisma, userId, 'UPDATE', 'Order', String(data.id), body, req.ip);
     return data;

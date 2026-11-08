@@ -145,6 +145,7 @@ enum RefundSource {
 enum PeriodType {
   LOCAL
   INTERNATIONAL
+  LIVE_SHOPPING
 }
 
 model role {
@@ -473,11 +474,13 @@ model purchase {
   shopper          user?          @relation(fields: [shopper_id], references: [id])
   period_id        Int
   period           jastip_period  @relation(fields: [period_id], references: [id])
-  order_item_id    Int
-  order_item       order_item     @relation(fields: [order_item_id], references: [id])
+  order_item_id    Int?
+  order_item       order_item?    @relation(fields: [order_item_id], references: [id])
   product_id       Int?
   product          product?       @relation(fields: [product_id], references: [id])
   brand_name       String
+  variation        String?
+  size             String?
   quantity         Int
   estimated_price  Decimal        @db.Decimal(18, 2)
   actual_price     Decimal        @db.Decimal(18, 2)

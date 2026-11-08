@@ -5,6 +5,7 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
   const order = await prisma.order.findUnique({
     where: { id: order_id },
     include: {
+      period: true,
       items: {
         include: {
           product: true,
@@ -15,9 +16,16 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
   });
   if (!order || !order.items || order.items.length === 0) return;
 
+  const isLiveOrReadyPeriod =
+    order.period?.type === 'LIVE_SHOPPING' || order.period?.code === 'READY-STOCK';
+
   for (const item of order.items) {
-    // Ready stock items do not need to be purchased
-    if (item.source_type === 'READY_STOCK' || item.product?.stock_mode === 'READY_STOCK') {
+    // Ready stock and Live Shopping items do not need to be purchased from orders
+    if (
+      isLiveOrReadyPeriod ||
+      item.source_type === 'READY_STOCK' ||
+      item.product?.stock_mode === 'READY_STOCK'
+    ) {
       if (item.fulfillment_status === 'PENDING') {
         await prisma.order_item.update({
           where: { id: item.id },
@@ -34,7 +42,27 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
     if (item.purchases && item.purchases.length > 0) continue;
 
     const brand = item.brand_name || item.product?.brand_name || '-';
-    const buyPrice = Number(item.product?.buy_price || 0);
+    let buyPrice = Number(item.product?.buy_price || 0);
+    const vpRaw: any = item.product?.variant_prices;
+    const vRules: any[] = Array.isArray(vpRaw)
+      ? vpRaw
+      : Array.isArray(vpRaw?.variantRules)
+        ? vpRaw.variantRules
+        : [];
+    if (vRules.length > 0) {
+      const iv = String(item.variation || '').trim().toLowerCase();
+      const isz = String(item.size || '').trim().toLowerCase();
+      for (const r of vRules) {
+        const rVars = (Array.isArray(r.variants) ? r.variants : []).map((x: any) => String(x).trim().toLowerCase());
+        const rSizes = (Array.isArray(r.sizes) ? r.sizes : []).map((x: any) => String(x).trim().toLowerCase());
+        const vMatch = rVars.length === 0 || (iv && rVars.includes(iv));
+        const sMatch = rSizes.length === 0 || (isz && rSizes.includes(isz));
+        if (vMatch && sMatch && Number(r.buyPrice || 0) > 0) {
+          buyPrice = Number(r.buyPrice);
+          break;
+        }
+      }
+    }
     const unitCost = buyPrice > 0
       ? buyPrice
       : Number(item.target_price_idr || item.unit_price_foreign || 0);
@@ -122,6 +150,7 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
     where: { id: order_id },
     include: {
       customer: true,
+      period: true,
       shipments: true,
       shipment_orders: true,
       invoice_links: {
@@ -150,8 +179,23 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
     activeItems.every((i) => i.fulfillment_status === 'KEPT');
   if (allKept) return;
 
+  const isLiveOrReadyStock =
+    order.period?.type === 'LIVE_SHOPPING' ||
+    order.period?.code === 'READY-STOCK' ||
+    (activeItems.length > 0 &&
+      activeItems.every(
+        (i) => i.source_type === 'READY_STOCK' || i.product?.stock_mode === 'READY_STOCK'
+      ));
+  const isPriorityCustomer = order.customer?.segment === 'PRIORITY';
+  const hasPaidDp = Number(order.paid_amount || 0) > 0;
   const isPartial = Number(order.outstanding_amount || 0) > 0;
-  if (isPartial) return;
+
+  if (isLiveOrReadyStock) {
+    // Ready Stock & Live Shopping: VIP goes directly to shipment; Regular goes to shipment once DP/payment is paid
+    if (!isPriorityCustomer && !hasPaidDp && isPartial) return;
+  } else {
+    if (isPartial) return;
+  }
 
   // Check if order already belongs to any shipment
   if (order.shipments && order.shipments.length > 0) return;

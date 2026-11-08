@@ -1,10 +1,17 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../config/prisma/prisma.service';
 
 export async function findPublicTargetOrder(
   prisma: PrismaService,
   clean: string
 ) {
+  const upper = clean.toUpperCase();
+  if (upper.startsWith('CUST') || upper.startsWith('CUS-')) {
+    throw new BadRequestException(
+      'Untuk melacak berdasarkan Customer ID (CUS-...), silakan masukkan 5 digit terakhir nomor WhatsApp Anda pada pop-up verifikasi.'
+    );
+  }
+
   // 1. Try finding by Invoice number
   let invoice = await prisma.invoice.findFirst({
     where: {

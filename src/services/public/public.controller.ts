@@ -35,6 +35,40 @@ export class PublicController {
     return this.publicService.trackOrder(identifier);
   }
 
+  @Post('track-customer')
+  async trackCustomerPost(
+    @Body()
+    body: {
+      customerCode?: string;
+      customer_code?: string;
+      phoneLast5?: string;
+      phone_last5?: string;
+      phoneLast4?: string;
+      phone_last4?: string;
+    }
+  ) {
+    const customerCode = body?.customerCode || body?.customer_code || '';
+    const phoneLast5 =
+      body?.phoneLast5 ||
+      body?.phone_last5 ||
+      body?.phoneLast4 ||
+      body?.phone_last4 ||
+      '';
+    return this.publicService.trackCustomerInvoices(customerCode, phoneLast5);
+  }
+
+  @Get('track-customer')
+  async trackCustomerGet(
+    @Query('customerCode') customerCode?: string,
+    @Query('phoneLast5') phoneLast5?: string,
+    @Query('phoneLast4') phoneLast4?: string
+  ) {
+    return this.publicService.trackCustomerInvoices(
+      customerCode || '',
+      phoneLast5 || phoneLast4 || ''
+    );
+  }
+
   @Get('invoices/:invoiceNumber')
   async getInvoiceDetail(@Param('invoiceNumber') invoiceNumber: string) {
     return this.publicService.getPublicInvoice(invoiceNumber);

@@ -54,6 +54,15 @@ export function validateShipmentPaymentPreconditions(
 }
 
 export function validateShipmentTransition(targetStatus: string, current: any, body: any) {
+  const effectiveCourier = String(body.courier ?? current.courier ?? '');
+  const isShopee =
+    body.shipping_method === 'SHOPEE' ||
+    body.shippingMethod === 'SHOPEE' ||
+    (body.shipping_method === undefined &&
+      body.shippingMethod === undefined &&
+      current.shipping_method === 'SHOPEE') ||
+    effectiveCourier.toLowerCase().includes('shopee');
+
   const isResiProvided =
     (body.tracking_number !== undefined &&
       body.tracking_number !== null &&
@@ -63,7 +72,7 @@ export function validateShipmentTransition(targetStatus: string, current: any, b
       String(body.trackingNumber).trim() !== '');
 
   if (current.status === 'WAITING_PACKING') {
-    if (isResiProvided) {
+    if (isResiProvided && !isShopee) {
       throw new BadRequestException(
         'Nomor resi tidak dapat diinput sebelum pesanan selesai dipacking ' +
           '(Status harus PACKED terlebih dahulu).'
@@ -76,7 +85,7 @@ export function validateShipmentTransition(targetStatus: string, current: any, b
     }
   }
 
-  if (targetStatus === 'PACKED') {
+  if (targetStatus === 'PACKED' && !isShopee) {
     const address = body.address ?? current.address;
     if (!address || !String(address).trim() || address === '-') {
       throw new BadRequestException(
@@ -101,11 +110,13 @@ export function validateShipmentTransition(targetStatus: string, current: any, b
     if (!courier || !String(courier).trim()) {
       throw new BadRequestException('Kurir pengiriman wajib diisi sebelum memproses pengiriman.');
     }
-    const address = body.address ?? current.address;
-    if (!address || !String(address).trim() || address === '-') {
-      throw new BadRequestException(
-        'Alamat pengiriman belum lengkap. Mohon perbarui alamat sebelum memproses pengiriman.'
-      );
+    if (!isShopee) {
+      const address = body.address ?? current.address;
+      if (!address || !String(address).trim() || address === '-') {
+        throw new BadRequestException(
+          'Alamat pengiriman belum lengkap. Mohon perbarui alamat sebelum memproses pengiriman.'
+        );
+      }
     }
     const shippedAt =
       body.shipped_at ?? body.shippedAt ?? current.shipped_at ?? current.shippedAt;

@@ -99,9 +99,11 @@ export class OrdersService {
     const period_id = body.period_id ? Number(body.period_id) : body.periodId ? Number(body.periodId) : null;
     const order_date = body.order_date || body.orderDate || new Date();
 
-    if (period_id && order_date) {
-      const period = await this.prisma.jastip_period.findUnique({ where: { id: period_id } });
-      if (period?.code !== 'READY-STOCK' && period?.order_close_at && new Date(order_date) > new Date(period.order_close_at)) {
+    const period = period_id
+      ? await this.prisma.jastip_period.findUnique({ where: { id: period_id } })
+      : null;
+    if (period && order_date) {
+      if (period.code !== 'READY-STOCK' && period.order_close_at && new Date(order_date) > new Date(period.order_close_at)) {
         throw new BadRequestException('Order date cannot be later than event order closing date.');
       }
     }
@@ -111,6 +113,8 @@ export class OrdersService {
       ? await this.prisma.customer.findUnique({ where: { id: customer_id } })
       : null;
     const isPriorityCustomer = customer?.segment === 'PRIORITY';
+    const isLiveOrReadyPeriod =
+      period?.type === 'LIVE_SHOPPING' || period?.code === 'READY-STOCK';
 
     const service_fee_mode = (body.service_fee_mode || body.serviceFeeMode || 'AUTO_CUSTOMER') as any;
     const isReseller = service_fee_mode === 'AUTO_RESELLER';
@@ -138,6 +142,12 @@ export class OrdersService {
       body.items || []
     );
 
+    const initialDefaultStatus = isPriorityCustomer
+      ? isLiveOrReadyPeriod
+        ? 'WAITING_SETTLEMENT'
+        : 'WAITING_PURCHASE'
+      : 'NEW';
+
     const data = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
@@ -146,7 +156,7 @@ export class OrdersService {
           period_id: period_id!,
           customer_id: customer_id!,
           admin_id: body.admin_id || body.adminId || user_id,
-          status: body.status || (isPriorityCustomer ? 'WAITING_PURCHASE' : 'NEW'),
+          status: body.status || initialDefaultStatus,
           currency_code: body.currency_code || body.currencyCode || 'IDR',
           exchange_rate: Number(body.exchange_rate ?? body.exchangeRate ?? 1),
           ...totals,
@@ -182,12 +192,14 @@ export class OrdersService {
 
     // If an existing unpacked invoice was selected, attach this order to it
     const targetInvoiceId = body.target_invoice_id || body.targetInvoiceId;
+    let attachedInvoiceId: number | null = null;
     if (targetInvoiceId) {
       const invId = Number(targetInvoiceId);
       const existingInv = await this.prisma.invoice.findFirst({
         where: { id: invId, customer_id: data.customer_id, deleted_at: null },
       });
       if (existingInv) {
+        attachedInvoiceId = invId;
         await this.prisma.invoice_order.create({
           data: {
             invoice_id: invId,
@@ -195,8 +207,40 @@ export class OrdersService {
             snapshot_amount: data.total_bill,
           },
         });
-        await this.invoiceCalcService.refreshInvoicePayment(invId);
       }
+    }
+
+    // Optional initial DP / payment entered together when creating the order
+    const initialPaymentAmount = Number(
+      body.initial_payment_amount ?? body.initialPaymentAmount ?? body.dp_amount ?? body.dpAmount ?? 0
+    );
+    if (initialPaymentAmount > 0) {
+      await this.prisma.payment.create({
+        data: {
+          payment_number: sequence('PAY'),
+          order_id: data.id,
+          invoice_id: attachedInvoiceId,
+          payment_date: new Date(order_date),
+          amount: initialPaymentAmount,
+          method:
+            body.initial_payment_method ||
+            body.initialPaymentMethod ||
+            'BANK_TRANSFER',
+          status: 'VERIFIED',
+          proof_url:
+            body.initial_payment_proof_url ||
+            body.initialPaymentProofUrl ||
+            null,
+          verified_by_id: user_id || null,
+          notes: 'DP / Pembayaran awal saat pembuatan pesanan.',
+        },
+      });
+    }
+
+    if (attachedInvoiceId) {
+      await this.invoiceCalcService.refreshInvoicePayment(attachedInvoiceId);
+    } else if (initialPaymentAmount > 0) {
+      await this.invoiceCalcService.refreshOrderPayment(data.id);
     }
 
     await this.prisma.notification.create({
@@ -209,15 +253,28 @@ export class OrdersService {
     });
 
     const isPriority = data.customer?.segment === 'PRIORITY';
-    if (isPriority || ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)) {
-      await this.invoiceCalcService.ensurePurchasesForOrder(data.id);
+    const isLiveOrReadyOrder =
+      isLiveOrReadyPeriod ||
+      (data.items.length > 0 &&
+        data.items.every(
+          (it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'
+        ));
+
+    if (isLiveOrReadyOrder) {
+      // Ready Stock & Live Shopping: skip Purchases and go directly to Shipment if VIP or DP paid
+      if (isPriority || initialPaymentAmount > 0 || ['PURCHASED', 'WAITING_SETTLEMENT', 'READY_TO_SHIP'].includes(data.status)) {
+        await this.invoiceCalcService.ensureShipmentForOrder(data.id);
+      }
+    } else {
+      if (isPriority || initialPaymentAmount > 0 || ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)) {
+        await this.invoiceCalcService.ensurePurchasesForOrder(data.id);
+      }
+      if (['PURCHASED', 'READY_TO_SHIP'].includes(data.status)) {
+        await this.invoiceCalcService.ensureShipmentForOrder(data.id);
+      }
     }
 
-    if (['PURCHASED', 'READY_TO_SHIP'].includes(data.status)) {
-      await this.invoiceCalcService.ensureShipmentForOrder(data.id);
-    }
-
-    return data;
+    return this.findOne(data.id);
   }
 
   async update(id: number, body: any, user_id?: number) {
@@ -344,7 +401,33 @@ export class OrdersService {
       updateData.exchange_rate = Number(body.exchange_rate ?? body.exchangeRate ?? 1);
     }
 
+    const isCancelling =
+      updateData.status === 'CANCELLED' && current.status !== 'CANCELLED';
+
     const data = await this.prisma.$transaction(async (tx) => {
+      if (isCancelling && !body.items) {
+        for (const oldItem of current.items) {
+          if (
+            oldItem.source_type === 'READY_STOCK' &&
+            oldItem.product_id &&
+            !['UNAVAILABLE', 'SHIPPED', 'DELIVERED'].includes(oldItem.fulfillment_status)
+          ) {
+            await this.stockService.releaseReadyStock(
+              tx,
+              oldItem.product_id,
+              oldItem.quantity,
+              user_id,
+              String(oldItem.id),
+              'Stok dilepas karena pesanan dibatalkan.'
+            );
+            await tx.order_item.update({
+              where: { id: oldItem.id },
+              data: { fulfillment_status: 'UNAVAILABLE', status_updated_at: new Date() },
+            });
+          }
+        }
+      }
+
       if (body.items) {
         for (const oldItem of current.items) {
           if (oldItem.source_type === 'READY_STOCK' && oldItem.product_id && !['UNAVAILABLE', 'SHIPPED', 'DELIVERED'].includes(oldItem.fulfillment_status)) {
@@ -357,7 +440,7 @@ export class OrdersService {
         for (const item of body.items) {
           await createOrderItemWithProduct(
             tx,
-            item,
+            isCancelling ? { ...item, fulfillment_status: 'UNAVAILABLE' } : item,
             id,
             updateData.period_id || current.period_id,
             user_id,
@@ -366,6 +449,22 @@ export class OrdersService {
           );
           if (!sharedUpdatedProductId && (item.product_id || item.productId)) {
             sharedUpdatedProductId = item.product_id || item.productId;
+          }
+        }
+
+        if (isCancelling) {
+          const newlyCreatedItems = await tx.order_item.findMany({ where: { order_id: id } });
+          for (const newItem of newlyCreatedItems) {
+            if (newItem.source_type === 'READY_STOCK' && newItem.product_id) {
+              await this.stockService.releaseReadyStock(
+                tx,
+                newItem.product_id,
+                newItem.quantity,
+                user_id,
+                String(newItem.id),
+                'Stok dilepas karena pesanan dibatalkan.'
+              );
+            }
           }
         }
       }
@@ -386,23 +485,42 @@ export class OrdersService {
       return updated;
     });
 
-    if (data.invoice_links?.length) {
-      for (const link of data.invoice_links) {
-        if (link.invoice_id) {
-          await this.invoiceCalcService.refreshInvoicePayment(link.invoice_id);
+    if (data.status !== 'CANCELLED') {
+      if (data.invoice_links?.length) {
+        for (const link of data.invoice_links) {
+          if (link.invoice_id) {
+            await this.invoiceCalcService.refreshInvoicePayment(link.invoice_id);
+          }
+        }
+      } else {
+        await this.invoiceCalcService.refreshOrderPayment(id);
+      }
+
+      const isPriority = data.customer?.segment === 'PRIORITY';
+      const isLiveOrReadyOrder =
+        data.period?.type === 'LIVE_SHOPPING' ||
+        data.period?.code === 'READY-STOCK' ||
+        (data.items.length > 0 &&
+          data.items.every(
+            (it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'
+          ));
+
+      if (isLiveOrReadyOrder) {
+        if (
+          isPriority ||
+          Number(data.paid_amount || 0) > 0 ||
+          ['PURCHASED', 'WAITING_SETTLEMENT', 'READY_TO_SHIP'].includes(data.status)
+        ) {
+          await this.invoiceCalcService.ensureShipmentForOrder(data.id);
+        }
+      } else {
+        if (isPriority || ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)) {
+          await this.invoiceCalcService.ensurePurchasesForOrder(data.id);
+        }
+        if (['PURCHASED', 'READY_TO_SHIP'].includes(data.status)) {
+          await this.invoiceCalcService.ensureShipmentForOrder(data.id);
         }
       }
-    } else {
-      await this.invoiceCalcService.refreshOrderPayment(id);
-    }
-
-    const isPriority = data.customer?.segment === 'PRIORITY';
-    if (isPriority || ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)) {
-      await this.invoiceCalcService.ensurePurchasesForOrder(data.id);
-    }
-
-    if (['PURCHASED', 'READY_TO_SHIP'].includes(data.status)) {
-      await this.invoiceCalcService.ensureShipmentForOrder(data.id);
     }
 
     return data;

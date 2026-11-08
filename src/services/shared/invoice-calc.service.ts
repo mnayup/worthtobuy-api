@@ -137,19 +137,22 @@ export class InvoiceCalcService {
 
       const orderData = await this.prisma.order.findUnique({
         where: { id: link.order_id },
-        include: { customer: true, items: { include: { product: true } } },
+        include: { customer: true, period: true, items: { include: { product: true } } },
       });
       const isPriorityCustomer = orderData?.customer?.segment === 'PRIORITY';
       const isReadyStockOrder =
-        (orderData?.items || []).length > 0 &&
-        orderData.items.every((it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK');
+        orderData?.period?.type === 'LIVE_SHOPPING' ||
+        orderData?.period?.code === 'READY-STOCK' ||
+        ((orderData?.items || []).length > 0 &&
+          orderData.items.every((it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'));
 
       let nextStatus = link.order.status;
+      let shouldEnsureShipment = false;
       if (isReadyStockOrder) {
-        if (orderPaid > 0) {
+        if (orderPaid > 0 || isPriorityCustomer) {
           nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
-          await this.ensureShipmentForOrder(link.order_id);
-          for (const it of orderData.items) {
+          shouldEnsureShipment = true;
+          for (const it of orderData?.items || []) {
             await this.prisma.order_item.update({
               where: { id: it.id },
               data: { fulfillment_status: 'AVAILABLE', purchase_status: 'PURCHASED', status_updated_at: new Date() },
@@ -173,7 +176,7 @@ export class InvoiceCalcService {
           if (allItemsBought && !allKept) {
             nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
             if (orderOutstanding <= 0) {
-              await this.ensureShipmentForOrder(link.order_id);
+              shouldEnsureShipment = true;
             }
           } else if (orderPaid > 0 || isPriorityCustomer) {
             nextStatus = 'WAITING_PURCHASE';
@@ -196,7 +199,7 @@ export class InvoiceCalcService {
               });
             } else {
               nextStatus = 'READY_TO_SHIP';
-              await this.ensureShipmentForOrder(link.order_id);
+              shouldEnsureShipment = true;
             }
           }
         }
@@ -206,6 +209,10 @@ export class InvoiceCalcService {
         where: { id: link.order_id },
         data: { paid_amount: orderPaid, outstanding_amount: orderOutstanding, status: nextStatus as any },
       });
+
+      if (shouldEnsureShipment) {
+        await this.ensureShipmentForOrder(link.order_id);
+      }
 
       if ((orderPaid > 0 || isPriorityCustomer) && !isReadyStockOrder) {
         await this.ensurePurchasesForOrder(link.order_id);
@@ -240,19 +247,22 @@ export class InvoiceCalcService {
 
     const orderData = await this.prisma.order.findUnique({
       where: { id: order_id },
-      include: { customer: true, items: { include: { product: true } } },
+      include: { customer: true, period: true, items: { include: { product: true } } },
     });
     const isPriorityCustomer = orderData?.customer?.segment === 'PRIORITY';
     const isReadyStockOrder =
-      (orderData?.items || []).length > 0 &&
-      orderData.items.every((it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK');
+      orderData?.period?.type === 'LIVE_SHOPPING' ||
+      orderData?.period?.code === 'READY-STOCK' ||
+      ((orderData?.items || []).length > 0 &&
+        orderData.items.every((it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'));
 
     let nextStatus = order.status;
+    let shouldEnsureShipment = false;
     if (isReadyStockOrder) {
-      if (paid_amount > 0) {
+      if (paid_amount > 0 || isPriorityCustomer) {
         nextStatus = outstanding_amount <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
-        await this.ensureShipmentForOrder(order_id);
-        for (const it of orderData.items) {
+        shouldEnsureShipment = true;
+        for (const it of orderData?.items || []) {
           await this.prisma.order_item.update({
             where: { id: it.id },
             data: { fulfillment_status: 'AVAILABLE', purchase_status: 'PURCHASED', status_updated_at: new Date() },
@@ -276,7 +286,7 @@ export class InvoiceCalcService {
         if (allItemsBought && !allKept) {
           nextStatus = outstanding_amount <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
           if (outstanding_amount <= 0) {
-            await this.ensureShipmentForOrder(order_id);
+            shouldEnsureShipment = true;
           }
         } else if (paid_amount > 0 || isPriorityCustomer) {
           nextStatus = 'WAITING_PURCHASE';
@@ -299,7 +309,7 @@ export class InvoiceCalcService {
             });
           } else {
             nextStatus = 'READY_TO_SHIP';
-            await this.ensureShipmentForOrder(order_id);
+            shouldEnsureShipment = true;
           }
         }
       }
@@ -309,6 +319,10 @@ export class InvoiceCalcService {
       where: { id: order_id },
       data: { paid_amount, outstanding_amount, status: nextStatus as any },
     });
+
+    if (shouldEnsureShipment) {
+      await this.ensureShipmentForOrder(order_id);
+    }
 
     if ((paid_amount > 0 || isPriorityCustomer) && !isReadyStockOrder) {
       await this.ensurePurchasesForOrder(order_id);
