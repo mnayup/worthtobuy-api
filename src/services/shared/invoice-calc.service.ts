@@ -140,6 +140,20 @@ export class InvoiceCalcService {
       else invoicePool += Number(payment.amount);
     }
 
+    // In a multi-order invoice, if a payment was registered with an order_id but its amount
+    // exceeds that order's total_bill (e.g. customer paid the whole invoice against a single order),
+    // cap the order's direct allocation at its total_bill and release the excess into invoicePool
+    // so sibling orders in the same invoice can be fulfilled and settled.
+    for (const link of invoice.orders) {
+      const total = Number(link.order?.total_bill ?? link.snapshot_amount ?? 0);
+      const direct = directByOrder.get(link.order_id) || 0;
+      if (direct > total) {
+        const excess = direct - total;
+        directByOrder.set(link.order_id, total);
+        invoicePool += excess;
+      }
+    }
+
     const sortedLinks = [...invoice.orders].sort(
       (a, b) => a.order.order_date.getTime() - b.order.order_date.getTime()
     );
