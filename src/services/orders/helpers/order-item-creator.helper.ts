@@ -14,15 +14,20 @@ export async function createOrderItemWithProduct(
   const newProd = item.new_product || item.newProduct;
   const manualName = item.manual_product_name || item.manualProductName || item.name;
 
+  let createdProductRecord: any = null;
   if ((!pId || pId === '__NEW_PRODUCT__') && (newProd || manualName)) {
     const pData = newProd || item;
     const stockQty = Number(pData.stock_quantity ?? pData.stockQuantity ?? 0);
+    const prodCategory = (pData.category ? String(pData.category).trim() : null) || null;
+    const prodBrand = (pData.brand_name || pData.brandName ? String(pData.brand_name || pData.brandName).trim() : null) || null;
+    const prodName = (pData.name || pData.product_name || pData.productName || manualName ? String(pData.name || pData.product_name || pData.productName || manualName).trim() : 'New Product');
+
     const createdProduct = await tx.product.create({
       data: {
         sku: pData.sku || sequence('SKU'),
-        name: pData.name || pData.product_name || pData.productName || manualName || 'New Product',
-        category: pData.category || null,
-        brand_name: pData.brand_name || pData.brandName || null,
+        name: prodName,
+        category: prodCategory,
+        brand_name: prodBrand,
         variant: pData.variant || pData.variation || item.variation || null,
         size: pData.size || item.size || null,
         store_location: pData.store_location || pData.storeLocation || null,
@@ -47,6 +52,7 @@ export async function createOrderItemWithProduct(
         notes: pData.notes || null,
       },
     });
+    createdProductRecord = createdProduct;
     item.product_id = createdProduct.id;
     item.productId = createdProduct.id;
     if (stockQty > 0) {
@@ -68,12 +74,17 @@ export async function createOrderItemWithProduct(
   const activeProductId = item.product_id || item.productId;
   let sourceType = item.source_type || item.sourceType || 'CATALOG';
   let resolvedProductSellingPrice = 0;
+  let catalogProductName: string | null = createdProductRecord?.name || null;
+  let catalogProductBrand: string | null = createdProductRecord?.brand_name || null;
+
   if (activeProductId) {
     const product = await tx.product.findUnique({
       where: { id: activeProductId },
       include: { period: true },
     });
     if (product) {
+      catalogProductName = product.name;
+      catalogProductBrand = product.brand_name;
       if (product.stock_mode === 'READY_STOCK' || product.period?.type === 'LIVE_SHOPPING') {
         sourceType = 'READY_STOCK';
       }
@@ -118,12 +129,23 @@ export async function createOrderItemWithProduct(
   const unitPrice = rawInputPrice > 0 ? rawInputPrice : resolvedProductSellingPrice;
   const targetPrice = Number(item.target_price_idr ?? item.targetPriceIdr ?? unitPrice ?? 0);
 
+  const finalManualProductName =
+    item.manual_product_name ||
+    item.manualProductName ||
+    catalogProductName ||
+    null;
+  const finalBrandName =
+    item.brand_name ||
+    item.brandName ||
+    catalogProductBrand ||
+    null;
+
   const row = await tx.order_item.create({
     data: {
       order_id: orderId,
       product_id: activeProductId || null,
-      manual_product_name: item.manual_product_name || item.manualProductName || null,
-      brand_name: item.brand_name || item.brandName || null,
+      manual_product_name: finalManualProductName,
+      brand_name: finalBrandName,
       source_type: sourceType as any,
       fulfillment_status: fulfillmentStatus as any,
       purchase_status: purchaseStatus as any,

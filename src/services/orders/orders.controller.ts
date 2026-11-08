@@ -54,7 +54,7 @@ export class OrdersController {
   @Patch(':id/status')
   @Roles('OWNER', 'ADMIN')
   async patchStatus(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
-    const data = await this.ordersService.update(Number(id), { status: body.status }, userId);
+    const data = await this.ordersService.updateStatus(Number(id), body.status, userId);
     await auditLog(this.prisma, userId, 'UPDATE', 'Order', String(data.id), body, req.ip);
     return data;
   }

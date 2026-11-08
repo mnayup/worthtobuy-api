@@ -531,6 +531,80 @@ export class OrdersService {
     return data;
   }
 
+  async updateStatus(id: number, status: string, user_id?: number) {
+    if (!status) {
+      throw new BadRequestException('Status pesanan wajib diisi.');
+    }
+
+    const current = await this.prisma.order.findUniqueOrThrow({
+      where: { id },
+      include: {
+        invoice_links: {
+          include: {
+            invoice: {
+              include: {
+                payments: { where: { status: 'VERIFIED', deleted_at: null } },
+              },
+            },
+          },
+        },
+        items: true,
+      },
+    });
+
+    const activeInvoiceLink = (current.invoice_links || []).find(
+      (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+    );
+    const invoice = activeInvoiceLink?.invoice;
+
+    const isFullPaymentInvoice =
+      invoice &&
+      (invoice.billing_model === 'FULL_PAYMENT' ||
+        invoice.status === 'PAID' ||
+        Number(invoice.outstanding_amount || 0) <= 0);
+
+    const isZeroOutstandingOrder = Number(current.outstanding_amount || 0) <= 0;
+
+    // Manual status override is permitted specifically for Full Payment cases (or when order is already fully paid)
+    if (!isFullPaymentInvoice && !isZeroOutstandingOrder) {
+      throw new BadRequestException(
+        'Perubahan status manual hanya diizinkan untuk pesanan dengan skema Full Payment / tagihan yang telah lunas.'
+      );
+    }
+
+    // When advancing to READY_TO_SHIP manually, ensure active items are marked AVAILABLE
+    if (status === 'READY_TO_SHIP') {
+      await this.prisma.order_item.updateMany({
+        where: {
+          order_id: id,
+          fulfillment_status: { notIn: ['AVAILABLE', 'UNAVAILABLE', 'SHIPPED', 'DELIVERED'] },
+        },
+        data: {
+          fulfillment_status: 'AVAILABLE',
+          purchase_status: 'PURCHASED',
+          status_updated_at: new Date(),
+        },
+      });
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id },
+      data: { status: status as any },
+      include: {
+        customer: true,
+        period: true,
+        items: { include: { product: true } },
+        invoice_links: true,
+      },
+    });
+
+    if (['READY_TO_SHIP', 'SHIPPED', 'PURCHASED'].includes(status)) {
+      await this.invoiceCalcService.ensureShipmentForOrder(id);
+    }
+
+    return updated;
+  }
+
   async remove(id: number, user_id?: number) {
     const order = await this.prisma.order.findUniqueOrThrow({
       where: { id },
