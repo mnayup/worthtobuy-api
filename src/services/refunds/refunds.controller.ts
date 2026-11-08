@@ -51,6 +51,14 @@ export class RefundsController {
     return data;
   }
 
+  @Put(':id/reject')
+  @RequirePermissions('refunds:request', 'refunds:execute')
+  async reject(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
+    const data = await this.refundsService.rejectRefund(Number(id), body?.reason || body?.notes);
+    await auditLog(this.prisma, userId, 'REJECT_REFUND', 'Refund', String(data.id), body, req.ip);
+    return data;
+  }
+
   @Delete(':id')
   @RequirePermissions('refunds:delete')
   async remove(@Param('id') id: string, @CurrentUser('id') userId: number, @Req() req: any) {

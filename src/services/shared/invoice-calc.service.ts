@@ -70,7 +70,7 @@ export class InvoiceCalcService {
       },
     });
     const orderIds = invoice.orders.map((link) => link.order_id);
-    const [payments, paidOverpaymentRefunds, unresolvedItemRefunds] = await Promise.all([
+    const [payments, settledOverpaymentRefunds, unresolvedItemRefunds] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           status: 'VERIFIED',
@@ -79,7 +79,9 @@ export class InvoiceCalcService {
         },
         orderBy: [{ payment_date: 'asc' }, { id: 'asc' }],
       }),
-      this.prisma.refund.findMany({ where: { invoice_id, source: 'OVERPAYMENT', status: 'PAID' } }),
+      this.prisma.refund.findMany({
+        where: { invoice_id, source: 'OVERPAYMENT', status: { in: ['PAID', 'REJECTED'] } },
+      }),
       this.prisma.refund.count({
         where: { invoice_id, source: 'UNAVAILABLE_ITEM', status: { in: ['REQUESTED', 'ON_PROCESS', 'APPROVED'] } },
       }),
@@ -99,7 +101,7 @@ export class InvoiceCalcService {
 
     const effectivePaid = paid_amount + deposit_amount;
     const outstanding_amount = Math.max(0, total_bill - effectivePaid);
-    const refundedOverpayment = paidOverpaymentRefunds.reduce(
+    const refundedOverpayment = settledOverpaymentRefunds.reduce(
       (sum, refund) => sum + Number(refund.amount),
       0
     );
@@ -229,15 +231,17 @@ export class InvoiceCalcService {
           activeItems.length > 0 &&
           activeItems.every((it) => it.fulfillment_status === 'KEPT');
 
-        if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(link.order.status)) {
+        if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'WAITING_PURCHASE', 'PURCHASED'].includes(link.order.status)) {
           if (allItemsBought && !allKept) {
             nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
             if (orderOutstanding <= 0) {
               shouldEnsureShipment = true;
             }
           } else if (orderPaid > 0 || isPriorityCustomer) {
-            nextStatus = 'WAITING_PURCHASE';
-          } else if (invoice.billing_model === 'DP') {
+            if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(link.order.status)) {
+              nextStatus = 'WAITING_PURCHASE';
+            }
+          } else if (invoice.billing_model === 'DP' && link.order.status === 'NEW') {
             nextStatus = 'WAITING_DP';
           }
         } else if (link.order.status === 'WAITING_SETTLEMENT' || link.order.status === 'READY_TO_SHIP') {
@@ -353,15 +357,17 @@ export class InvoiceCalcService {
         activeItems.length > 0 &&
         activeItems.every((it) => it.fulfillment_status === 'KEPT');
 
-      if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
+      if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'WAITING_PURCHASE', 'PURCHASED'].includes(order.status)) {
         if (allItemsBought && !allKept) {
           nextStatus = outstanding_amount <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
           if (outstanding_amount <= 0) {
             shouldEnsureShipment = true;
           }
         } else if (paid_amount > 0 || isPriorityCustomer) {
-          nextStatus = 'WAITING_PURCHASE';
-        } else if (invoiceLinks.some((l) => l.invoice?.billing_model === 'DP')) {
+          if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
+            nextStatus = 'WAITING_PURCHASE';
+          }
+        } else if (invoiceLinks.some((l) => l.invoice?.billing_model === 'DP') && order.status === 'NEW') {
           nextStatus = 'WAITING_DP';
         }
       } else if (order.status === 'WAITING_SETTLEMENT' || order.status === 'READY_TO_SHIP') {

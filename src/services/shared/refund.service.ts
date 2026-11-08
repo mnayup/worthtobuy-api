@@ -9,8 +9,11 @@ export class RefundService {
   async ensureOverpaymentRefund(invoice_id: number, amount: number) {
     const source_key = `INVOICE-${invoice_id}-OVERPAYMENT`;
     const existing = await this.prisma.refund.findUnique({ where: { source_key } });
+    if (existing?.status === 'REJECTED') {
+      return existing;
+    }
     if (amount <= 0) {
-      if (!existing || existing.status === 'PAID' || existing.status === 'REJECTED') return existing;
+      if (!existing || existing.status === 'PAID') return existing;
       if (existing.status === 'REQUESTED') return this.prisma.refund.delete({ where: { id: existing.id } });
       return this.prisma.refund.update({
         where: { id: existing.id },

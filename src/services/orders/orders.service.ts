@@ -534,8 +534,50 @@ export class OrdersService {
   async remove(id: number, user_id?: number) {
     const order = await this.prisma.order.findUniqueOrThrow({
       where: { id },
-      include: { items: true, invoice_links: true },
+      include: {
+        items: true,
+        invoice_links: {
+          include: {
+            invoice: {
+              include: {
+                payments: { where: { status: 'VERIFIED', deleted_at: null } },
+              },
+            },
+          },
+        },
+        payments: { where: { status: 'VERIFIED', deleted_at: null } },
+      },
     });
+
+    const directPaid = Number(order.paid_amount || 0);
+    const verifiedOrderPayments = (order.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+    const activeInvoiceLink = (order.invoice_links || []).find(
+      (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+    );
+    const invoice = activeInvoiceLink?.invoice;
+    const invoicePaid = invoice
+      ? Number(invoice.paid_amount || 0) + Number(invoice.deposit_amount || 0)
+      : 0;
+    const verifiedInvoicePayments = (invoice?.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+
+    const isDpPaid =
+      directPaid > 0 ||
+      verifiedOrderPayments > 0 ||
+      invoicePaid > 0 ||
+      verifiedInvoicePayments > 0 ||
+      !['NEW', 'WAITING_DP'].includes(order.status);
+
+    if (isDpPaid) {
+      throw new BadRequestException(
+        `Pesanan ${order.order_number} tidak dapat dihapus karena sudah memiliki pembayaran DP atau sedang berjalan dalam proses transaksi.`
+      );
+    }
 
     for (const item of order.items) {
       if (item.source_type === 'READY_STOCK' && item.product_id && !['UNAVAILABLE', 'SHIPPED', 'DELIVERED'].includes(item.fulfillment_status)) {

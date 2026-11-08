@@ -210,6 +210,25 @@ export class RefundsService {
     });
   }
 
+  async rejectRefund(id: number, reason?: string) {
+    const current = await this.prisma.refund.findUniqueOrThrow({
+      where: { id },
+      include: { order: true, invoice: true },
+    });
+
+    if (current.status === 'PAID') {
+      throw new BadRequestException('Refund yang sudah selesai/PAID tidak dapat ditolak.');
+    }
+    if (current.status === 'REJECTED') {
+      return current;
+    }
+
+    return this.update(id, {
+      status: 'REJECTED',
+      notes: reason ? reason.trim() : (current.notes || 'Ditolak oleh admin/owner.'),
+    });
+  }
+
   async remove(id: number, user_id?: number) {
     const current = await this.prisma.refund.findUniqueOrThrow({ where: { id } });
     if (current.auto_generated) {
