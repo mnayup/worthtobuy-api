@@ -3,12 +3,13 @@ import { InvoicesService } from './invoices.service';
 import { InvoicesController } from './invoices.controller';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { RefundService } from '../shared/refund.service';
+import { OrderStatusReconcilerService } from '../shared/order-status-reconciler.service';
 
 import { CustomersModule } from '../customers/customers.module';
 
 @Module({
   imports: [CustomersModule],
-  providers: [InvoicesService, InvoiceCalcService, RefundService],
+  providers: [InvoicesService, InvoiceCalcService, RefundService, OrderStatusReconcilerService],
   controllers: [InvoicesController],
   exports: [InvoicesService],
 })
