@@ -41,7 +41,28 @@ export class PeriodsService implements OnModuleInit {
     }
   }
 
+  private async autoCloseExpiredPeriods() {
+    try {
+      const now = new Date();
+      await this.prisma.jastip_period.updateMany({
+        where: {
+          deleted_at: null,
+          status: 'OPEN',
+          code: { not: 'READY-STOCK' },
+          order_close_at: { lt: now },
+        },
+        data: {
+          status: 'CLOSED',
+        },
+      });
+    } catch (err) {
+      // Ignore background auto-close error to avoid blocking request
+    }
+  }
+
   async findAll(query: any) {
+    await this.autoCloseExpiredPeriods();
+
     const page = Math.max(1, Number(query.page || 1));
     const limit = Math.min(100, Math.max(1, Number(query.limit || 10)));
     const skip = (page - 1) * limit;
@@ -220,6 +241,19 @@ export class PeriodsService implements OnModuleInit {
         throw new BadRequestException(
           'Estimated shipping time cannot be before the event period end.',
         );
+      }
+    }
+
+    // If order_close_at or return_at is extended into the future and status was CLOSED,
+    // or if the user explicitly opens it while the period is valid, ensure status aligns correctly.
+    const now = new Date();
+    const finalOrderCloseAt = data.order_close_at !== undefined ? data.order_close_at : existing?.order_close_at;
+    if (finalOrderCloseAt && new Date(finalOrderCloseAt) > now) {
+      // If duration was added/extended into the future:
+      // If user provided a specific status (e.g. 'OPEN'), use that;
+      // if previous status was 'CLOSED' and no explicit status was passed (or user changed it to 'OPEN'), allow opening.
+      if (body.status === 'OPEN' || (!body.status && existing?.status === 'CLOSED')) {
+        data.status = 'OPEN';
       }
     }
 

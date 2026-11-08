@@ -3,33 +3,47 @@ import { BadRequestException } from '@nestjs/common';
 export function isOrderFullyPaid(order: any): boolean {
   if (!order) return false;
 
-  // 1. If invoice links exist, all invoices must be PAID, OVERPAID, or REFUND_DUE with 0 outstanding
-  const invoiceLinks = order.invoice_links || order.invoiceLinks;
-  if (invoiceLinks && invoiceLinks.length > 0) {
-    const hasUnpaidInvoice = invoiceLinks.some((link: any) => {
-      const inv = link.invoice;
-      if (!inv) return false;
-      const outstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
-      return !['PAID', 'OVERPAID', 'REFUND_DUE'].includes(inv.status) || outstanding > 0;
-    });
-    if (hasUnpaidInvoice) return false;
-  }
-
-  // 2. Outstanding amount check
-  const outstanding = Number(order.outstanding_amount ?? order.outstandingAmount ?? 0);
-  if (outstanding > 0) return false;
-
-  // 3. Paid amount vs total bill check
-  const totalBill = Number(order.total_bill ?? order.totalBill ?? 0);
-  const paidAmount = Number(order.paid_amount ?? order.paidAmount ?? 0);
-  if (totalBill > 0 && paidAmount < totalBill) return false;
-
-  // 4. Status check: order must not be in pending payment status
-  if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'WAITING_SETTLEMENT'].includes(order.status)) {
+  // 1. Order must not be in initial/unsettled item payment status
+  if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'CANCELLED'].includes(order.status)) {
     return false;
   }
 
-  return true;
+  const totalBill = Number(order.total_bill ?? order.totalBill ?? 0);
+  const paidAmount = Number(order.paid_amount ?? order.paidAmount ?? 0);
+  const outstanding = Number(order.outstanding_amount ?? order.outstandingAmount ?? 0);
+  const customerShipping = Number(order.customer_shipping ?? order.customerShipping ?? 0);
+  const nonShippingBill = Math.max(0, totalBill - customerShipping);
+
+  // 2. If the order itself has 0 outstanding and its bill is covered, it is fully paid
+  // (even if a sibling order on the same invoice has an ongkir settlement balance)
+  if (outstanding <= 0 && (totalBill <= 0 || paidAmount >= totalBill)) {
+    return true;
+  }
+
+  // 3. If the order is in shipment stage and its non-shipping (item + service fee) bill is fully paid,
+  // any remaining outstanding amount is strictly shipping / ongkir settlement, which should not block
+  // packing or inputting resi.
+  if (
+    ['READY_TO_SHIP', 'WAITING_SETTLEMENT', 'SHIPPED', 'COMPLETED'].includes(order.status) &&
+    paidAmount > 0 &&
+    paidAmount >= nonShippingBill
+  ) {
+    return true;
+  }
+
+  // 4. Fallback: if order.paid_amount was not synced yet, check if all linked invoices are PAID
+  const invoiceLinks = order.invoice_links || order.invoiceLinks;
+  if (invoiceLinks && invoiceLinks.length > 0) {
+    const allInvoicesPaid = invoiceLinks.every((link: any) => {
+      const inv = link.invoice;
+      if (!inv) return false;
+      const invOutstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
+      return ['PAID', 'OVERPAID', 'REFUND_DUE'].includes(inv.status) && invOutstanding <= 0;
+    });
+    if (allInvoicesPaid) return true;
+  }
+
+  return false;
 }
 
 export function validateShipmentPaymentPreconditions(

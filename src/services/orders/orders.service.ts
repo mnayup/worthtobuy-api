@@ -102,9 +102,14 @@ export class OrdersService {
     const period = period_id
       ? await this.prisma.jastip_period.findUnique({ where: { id: period_id } })
       : null;
-    if (period && order_date) {
-      if (period.code !== 'READY-STOCK' && period.order_close_at && new Date(order_date) > new Date(period.order_close_at)) {
-        throw new BadRequestException('Order date cannot be later than event order closing date.');
+    if (period) {
+      if (period.status !== 'OPEN') {
+        throw new BadRequestException(`Event "${period.name}" is not open (status: ${period.status}). Orders can only be created for open events.`);
+      }
+      if (order_date) {
+        if (period.code !== 'READY-STOCK' && period.order_close_at && new Date(order_date) > new Date(period.order_close_at)) {
+          throw new BadRequestException('Order date cannot be later than event order closing date.');
+        }
       }
     }
 

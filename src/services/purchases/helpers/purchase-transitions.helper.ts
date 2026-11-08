@@ -104,7 +104,50 @@ export async function handleUnavailableTransitionHelper(
     },
   });
 
-  await refundService.ensureUnavailableItemRefund(order_item_id);
+  // Check invoice_order first: only create refund if customer has already paid DP
+  const freshOrder = await prisma.order.findUnique({
+    where: { id: order.id },
+    include: {
+      invoice_links: {
+        include: {
+          invoice: {
+            include: {
+              payments: { where: { status: 'VERIFIED', deleted_at: null } },
+            },
+          },
+        },
+      },
+      payments: { where: { status: 'VERIFIED', deleted_at: null } },
+    },
+  });
+
+  const activeInvoiceLink = (freshOrder?.invoice_links || []).find(
+    (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+  );
+  const linkedInvoice = activeInvoiceLink?.invoice;
+  const invoicePaid = linkedInvoice
+    ? Number(linkedInvoice.paid_amount || 0) + Number(linkedInvoice.deposit_amount || 0)
+    : 0;
+  const verifiedInvoicePayments = (linkedInvoice?.payments || []).reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0
+  );
+  const verifiedOrderPayments = (freshOrder?.payments || []).reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0
+  );
+  const orderPaid = Number(freshOrder?.paid_amount || 0);
+  const hasCustomerPaidDp =
+    Boolean(linkedInvoice) &&
+    (invoicePaid > 0 || verifiedInvoicePayments > 0 || verifiedOrderPayments > 0) &&
+    orderPaid > 0 &&
+    !['NEW', 'WAITING_DP'].includes(freshOrder?.status || '');
+
+  if (hasCustomerPaidDp) {
+    await refundService.ensureUnavailableItemRefund(order_item_id);
+  } else {
+    await refundService.removeUnavailableItemRefund(order_item_id);
+  }
 
   const totalItems = await prisma.order_item.count({ where: { order_id: order.id } });
   const unavailableCount = await prisma.order_item.count({

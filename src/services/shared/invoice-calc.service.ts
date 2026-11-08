@@ -56,7 +56,18 @@ export class InvoiceCalcService {
   async refreshInvoicePayment(invoice_id: number) {
     const invoice = await this.prisma.invoice.findUniqueOrThrow({
       where: { id: invoice_id },
-      include: { orders: { include: { order: true } } },
+      include: {
+        orders: {
+          include: {
+            order: {
+              include: {
+                shipments: true,
+                shipment_orders: { include: { shipment: true } },
+              },
+            },
+          },
+        },
+      },
     });
     const orderIds = invoice.orders.map((link) => link.order_id);
     const [payments, paidOverpaymentRefunds, unresolvedItemRefunds] = await Promise.all([
@@ -127,11 +138,57 @@ export class InvoiceCalcService {
       else invoicePool += Number(payment.amount);
     }
 
-    for (const link of invoice.orders.sort((a, b) => a.order.order_date.getTime() - b.order.order_date.getTime())) {
+    const sortedLinks = [...invoice.orders].sort(
+      (a, b) => a.order.order_date.getTime() - b.order.order_date.getTime()
+    );
+
+    const getOrderPositiveShippingVariance = (ord: any): number => {
+      const shipmentMap = new Map<number, any>();
+      for (const s of ord?.shipments || []) {
+        if (s?.id) shipmentMap.set(s.id, s);
+      }
+      for (const so of ord?.shipment_orders || []) {
+        if (so?.shipment?.id) shipmentMap.set(so.shipment.id, so.shipment);
+      }
+      let variance = 0;
+      for (const s of shipmentMap.values()) {
+        if (s.order_id === ord.id && Number(s.shipping_cost_difference || 0) > 0) {
+          variance += Number(s.shipping_cost_difference);
+        }
+      }
+      return variance;
+    };
+
+    // Pass 1: Allocate invoicePool to each order's base bill (excluding positive shipping variance)
+    // so that an ongkir shortage on one order never steals base payment from sibling orders.
+    const baseAllocByOrder = new Map<number, number>();
+    for (const link of sortedLinks) {
+      const total = Number(link.order.total_bill);
+      const variance = getOrderPositiveShippingVariance(link.order);
+      const baseTotal = Math.max(0, total - variance);
+      const direct = directByOrder.get(link.order_id) || 0;
+      const baseNeed = Math.max(0, baseTotal - direct);
+      const baseAlloc = Math.min(baseNeed, invoicePool);
+      invoicePool -= baseAlloc;
+      baseAllocByOrder.set(link.order_id, baseAlloc);
+    }
+
+    // Pass 2: Allocate any remaining invoicePool to shipping variance / remaining bill
+    const totalAllocByOrder = new Map<number, number>();
+    for (const link of sortedLinks) {
       const total = Number(link.order.total_bill);
       const direct = directByOrder.get(link.order_id) || 0;
-      const allocation = Math.min(Math.max(0, total - direct), invoicePool);
-      invoicePool -= allocation;
+      const baseAlloc = baseAllocByOrder.get(link.order_id) || 0;
+      const remainingNeed = Math.max(0, total - (direct + baseAlloc));
+      const varAlloc = Math.min(remainingNeed, invoicePool);
+      invoicePool -= varAlloc;
+      totalAllocByOrder.set(link.order_id, baseAlloc + varAlloc);
+    }
+
+    for (const link of sortedLinks) {
+      const total = Number(link.order.total_bill);
+      const direct = directByOrder.get(link.order_id) || 0;
+      const allocation = totalAllocByOrder.get(link.order_id) || 0;
       const orderPaid = direct + allocation;
       const orderOutstanding = Math.max(0, total - orderPaid);
 
@@ -180,6 +237,8 @@ export class InvoiceCalcService {
             }
           } else if (orderPaid > 0 || isPriorityCustomer) {
             nextStatus = 'WAITING_PURCHASE';
+          } else if (invoice.billing_model === 'DP') {
+            nextStatus = 'WAITING_DP';
           }
         } else if (link.order.status === 'WAITING_SETTLEMENT' || link.order.status === 'READY_TO_SHIP') {
           if (orderOutstanding <= 0) {
@@ -191,7 +250,7 @@ export class InvoiceCalcService {
                 ],
               },
             });
-            if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {
+            if (ship && ship.tracking_number) {
               nextStatus = 'SHIPPED';
               await this.prisma.shipment.update({
                 where: { id: ship.id },
@@ -199,8 +258,16 @@ export class InvoiceCalcService {
               });
             } else {
               nextStatus = 'READY_TO_SHIP';
+              if (ship && ship.status === 'WAITING_SETTLEMENT') {
+                await this.prisma.shipment.update({
+                  where: { id: ship.id },
+                  data: { status: ship.packed_at ? 'PACKED' : 'WAITING_PACKING' },
+                });
+              }
               shouldEnsureShipment = true;
             }
+          } else {
+            nextStatus = 'WAITING_SETTLEMENT';
           }
         }
       }
@@ -238,9 +305,13 @@ export class InvoiceCalcService {
   }
 
   async refreshOrderPayment(order_id: number) {
-    const [order, payments] = await Promise.all([
+    const [order, payments, invoiceLinks] = await Promise.all([
       this.prisma.order.findUniqueOrThrow({ where: { id: order_id } }),
       this.prisma.payment.findMany({ where: { order_id, status: 'VERIFIED', deleted_at: null } }),
+      this.prisma.invoice_order.findMany({
+        where: { order_id },
+        include: { invoice: true },
+      }),
     ]);
     const paid_amount = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
     const outstanding_amount = Math.max(0, Number(order.total_bill) - paid_amount);
@@ -290,6 +361,8 @@ export class InvoiceCalcService {
           }
         } else if (paid_amount > 0 || isPriorityCustomer) {
           nextStatus = 'WAITING_PURCHASE';
+        } else if (invoiceLinks.some((l) => l.invoice?.billing_model === 'DP')) {
+          nextStatus = 'WAITING_DP';
         }
       } else if (order.status === 'WAITING_SETTLEMENT' || order.status === 'READY_TO_SHIP') {
         if (outstanding_amount <= 0) {
@@ -301,7 +374,7 @@ export class InvoiceCalcService {
               ],
             },
           });
-          if (ship && (ship.tracking_number || ship.status === 'WAITING_SETTLEMENT')) {
+          if (ship && ship.tracking_number) {
             nextStatus = 'SHIPPED';
             await this.prisma.shipment.update({
               where: { id: ship.id },
@@ -309,8 +382,16 @@ export class InvoiceCalcService {
             });
           } else {
             nextStatus = 'READY_TO_SHIP';
+            if (ship && ship.status === 'WAITING_SETTLEMENT') {
+              await this.prisma.shipment.update({
+                where: { id: ship.id },
+                data: { status: ship.packed_at ? 'PACKED' : 'WAITING_PACKING' },
+              });
+            }
             shouldEnsureShipment = true;
           }
+        } else {
+          nextStatus = 'WAITING_SETTLEMENT';
         }
       }
     }

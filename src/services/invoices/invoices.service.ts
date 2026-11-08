@@ -153,6 +153,14 @@ export class InvoicesService {
   }
 
   async findOne(id: number) {
+    const exists = await this.prisma.invoice.findFirst({
+      where: { id, deleted_at: null },
+      select: { id: true },
+    });
+    if (exists) {
+      await this.invoiceCalcService.refreshInvoicePayment(id);
+    }
+
     const data = await this.prisma.invoice.findFirstOrThrow({
       where: { id, deleted_at: null },
       include: {

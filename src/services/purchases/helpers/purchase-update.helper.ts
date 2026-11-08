@@ -5,6 +5,10 @@ import {
   handlePurchasedTransitionHelper,
   handleUnavailableTransitionHelper,
 } from './purchase-transitions.helper';
+import {
+  embedSortingIntoNotes,
+  extractSortingFromNotes,
+} from './purchase-consolidation.helper';
 
 export function cleanPurchaseData(body: any): any {
   if (!body || typeof body !== 'object') return {};
@@ -84,10 +88,27 @@ export async function updateConsolidatedPurchaseHelper(
     },
   });
 
+  const existingSorting = rows.reduce<any[]>((acc, r) => {
+    if (acc.length > 0) return acc;
+    return extractSortingFromNotes(r.notes).sortingLines;
+  }, []);
+  const existingCleanNotes = rows.reduce<string | null>((acc, r) => {
+    if (acc !== null) return acc;
+    return extractSortingFromNotes(r.notes).cleanNotes;
+  }, null);
+
+  const nextSortingLines = Array.isArray(body.sortingLines)
+    ? body.sortingLines
+    : existingSorting;
+  const nextCleanNotes =
+    body.notes !== undefined ? body.notes : existingCleanNotes;
+
   const commonData: any = {};
   if (body.paymentMethod !== undefined) commonData.payment_method = body.paymentMethod;
   if (body.receiptUrl !== undefined) commonData.receipt_url = body.receiptUrl;
-  if (body.notes !== undefined) commonData.notes = body.notes;
+  if (body.notes !== undefined || Array.isArray(body.sortingLines)) {
+    commonData.notes = embedSortingIntoNotes(nextCleanNotes, nextSortingLines);
+  }
   if (body.shopperId !== undefined) commonData.shopper_id = Number(body.shopperId) || null;
 
   const itemMap = new Map<number, any>();
@@ -96,12 +117,50 @@ export async function updateConsolidatedPurchaseHelper(
     if (it.id) itemMap.set(Number(it.id), it);
   });
 
+  // Track newly added/updated variants and sizes per product so they are synced to product detail
+  const productSpecsMap = new Map<number, { variants: Set<string>; sizes: Set<string>; buyPrices: number[] }>();
+  const recordProductSpec = (productId?: number | null, variant?: string | null, size?: string | null, unitPrice?: number) => {
+    if (!productId) return;
+    if (!productSpecsMap.has(productId)) {
+      productSpecsMap.set(productId, { variants: new Set(), sizes: new Set(), buyPrices: [] });
+    }
+    const spec = productSpecsMap.get(productId)!;
+    const v = String(variant || '').trim();
+    const s = String(size || '').trim();
+    if (v && v !== '-' && v.toLowerCase() !== 'default') spec.variants.add(v);
+    if (s && s !== '-') spec.sizes.add(s);
+    if (unitPrice && unitPrice > 0) spec.buyPrices.push(unitPrice);
+  };
+
+  if (Array.isArray(body.newProductSpecs)) {
+    for (const sp of body.newProductSpecs) {
+      const pid = Number(sp.productId || sp.product_id || 0);
+      if (pid > 0) {
+        recordProductSpec(pid, sp.variant || sp.variation, sp.size, Number(sp.buyPrice || sp.unitPrice || 0));
+      }
+    }
+  }
+
   for (const row of rows) {
     const itInput = (row.order_item_id ? itemMap.get(row.order_item_id) : undefined) || itemMap.get(row.id);
     const isRejected = Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE');
     const isBought = Boolean(itInput?.is_bought ?? !isRejected);
     const rawKeptUntil = itInput?.kept_until !== undefined ? itInput.kept_until : itInput?.keptUntil;
     const keptUntilData = rawKeptUntil !== undefined ? (rawKeptUntil ? new Date(rawKeptUntil) : null) : undefined;
+    const rawVariation = itInput?.variation !== undefined ? itInput.variation : itInput?.variant;
+    const rawSize = itInput?.size !== undefined ? itInput.size : undefined;
+    const nextVariation =
+      rawVariation !== undefined
+        ? (String(rawVariation || '').trim() && String(rawVariation || '').trim() !== 'Default'
+            ? String(rawVariation).trim()
+            : null)
+        : undefined;
+    const nextSize =
+      rawSize !== undefined
+        ? (String(rawSize || '').trim() && String(rawSize || '').trim() !== '-'
+            ? String(rawSize).trim()
+            : null)
+        : undefined;
     const allocatedQty =
       itInput?.allocated_qty !== undefined
         ? Number(itInput.allocated_qty)
@@ -113,9 +172,21 @@ export async function updateConsolidatedPurchaseHelper(
         ? Number(itInput.actual_price)
         : Number(row.actual_price) / (row.quantity || 1);
 
+    const activeProductId = row.product_id || row.order_item?.product_id || null;
+    recordProductSpec(
+      activeProductId,
+      nextVariation !== undefined ? nextVariation : (row.variation || row.order_item?.variation),
+      nextSize !== undefined ? nextSize : (row.size || row.order_item?.size),
+      unitPrice
+    );
+
+    const specUpdateData: any = {};
+    if (nextVariation !== undefined) specUpdateData.variation = nextVariation;
+    if (nextSize !== undefined) specUpdateData.size = nextSize;
+
     // Handle manual Live Shopping purchase (no order_item_id)
     if (!row.order_item_id || !row.order_item) {
-      const targetStatus = isRejected || allocatedQty <= 0 ? 'UNAVAILABLE' : isBought ? 'PURCHASED' : 'WAITING_PURCHASE';
+      const targetStatus = isRejected || allocatedQty <= 0 ? 'UNAVAILABLE' : isBought ? 'PURCHASED' : (itInput?.status === 'SORTING' ? 'SORTING' : 'WAITING_PURCHASE');
       const nextQty = Math.max(0, allocatedQty);
       const nextActual = targetStatus === 'UNAVAILABLE' ? 0 : unitPrice * (nextQty || row.quantity);
       const est = Number(row.estimated_price);
@@ -124,6 +195,7 @@ export async function updateConsolidatedPurchaseHelper(
         where: { id: row.id },
         data: {
           ...commonData,
+          ...specUpdateData,
           ...(nextQty > 0 ? { quantity: nextQty } : {}),
           status: targetStatus as any,
           actual_price: nextActual,
@@ -158,11 +230,19 @@ export async function updateConsolidatedPurchaseHelper(
         where: { id: row.id },
         data: {
           ...commonData,
+          ...specUpdateData,
           status: 'UNAVAILABLE',
           actual_price: 0,
           price_difference: 0,
         },
       });
+
+      if (Object.keys(specUpdateData).length > 0) {
+        await prisma.order_item.update({
+          where: { id: row.order_item_id },
+          data: specUpdateData,
+        });
+      }
 
       await handleUnavailableTransitionHelper(
         prisma,
@@ -177,7 +257,6 @@ export async function updateConsolidatedPurchaseHelper(
 
     // Case 2: Partial Allocation (Shortage)
     if (allocatedQty < row.quantity) {
-      const shortageQty = row.quantity - allocatedQty;
       const boughtActual = unitPrice * allocatedQty;
       const boughtEst = (Number(row.estimated_price) * allocatedQty) / row.quantity;
 
@@ -186,6 +265,7 @@ export async function updateConsolidatedPurchaseHelper(
         where: { id: row.id },
         data: {
           ...commonData,
+          ...specUpdateData,
           quantity: allocatedQty,
           status: 'PURCHASED',
           actual_price: boughtActual,
@@ -197,6 +277,7 @@ export async function updateConsolidatedPurchaseHelper(
       await prisma.order_item.update({
         where: { id: row.order_item_id },
         data: {
+          ...specUpdateData,
           quantity: allocatedQty,
           ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
         },
@@ -212,8 +293,12 @@ export async function updateConsolidatedPurchaseHelper(
       continue;
     }
 
-    // Case 3: Fully bought or waiting purchase
-    const rowStatus = isBought ? 'PURCHASED' : 'WAITING_PURCHASE';
+    // Case 3: Fully bought, waiting purchase, or sorting
+    const rowStatus = itInput?.status === 'SORTING'
+      ? 'SORTING'
+      : isBought
+        ? 'PURCHASED'
+        : 'WAITING_PURCHASE';
     const rowActual = unitPrice * row.quantity;
     const est = Number(row.estimated_price);
 
@@ -221,6 +306,7 @@ export async function updateConsolidatedPurchaseHelper(
       where: { id: row.id },
       data: {
         ...commonData,
+        ...specUpdateData,
         status: rowStatus as any,
         actual_price: rowActual,
         price_difference: rowActual - est,
@@ -228,10 +314,13 @@ export async function updateConsolidatedPurchaseHelper(
     });
 
     if (rowStatus === 'PURCHASED') {
-      if (keptUntilData !== undefined) {
+      if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
         await prisma.order_item.update({
           where: { id: row.order_item_id },
-          data: { kept_until: keptUntilData },
+          data: {
+            ...specUpdateData,
+            ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+          },
         });
       }
 
@@ -242,13 +331,134 @@ export async function updateConsolidatedPurchaseHelper(
         fromStatus,
         userId
       );
-    } else if (keptUntilData !== undefined) {
+    } else if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
       await prisma.order_item.update({
         where: { id: row.order_item_id },
-        data: { kept_until: keptUntilData },
+        data: {
+          ...specUpdateData,
+          ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+        },
       });
     }
   }
 
+  // Sync any newly added variants or sizes back to product detail (products table)
+  if (productSpecsMap.size > 0) {
+    const parseTagList = (raw?: string | null): string[] =>
+      raw
+        ? String(raw)
+            .split(/[,;\n]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+
+    for (const [productId, spec] of productSpecsMap.entries()) {
+      const existingProduct = await prisma.product.findUnique({
+        where: { id: productId },
+      });
+      if (!existingProduct) continue;
+
+      const existingVariants = parseTagList(existingProduct.variant);
+      const existingSizes = parseTagList(existingProduct.size);
+
+      const lowerExistingVars = new Set(existingVariants.map((v) => v.toLowerCase()));
+      const lowerExistingSizes = new Set(existingSizes.map((s) => s.toLowerCase()));
+
+      let hasChanges = false;
+      for (const v of spec.variants) {
+        if (!lowerExistingVars.has(v.toLowerCase())) {
+          existingVariants.push(v);
+          lowerExistingVars.add(v.toLowerCase());
+          hasChanges = true;
+        }
+      }
+      for (const s of spec.sizes) {
+        if (!lowerExistingSizes.has(s.toLowerCase())) {
+          existingSizes.push(s);
+          lowerExistingSizes.add(s.toLowerCase());
+          hasChanges = true;
+        }
+      }
+
+      if (hasChanges) {
+        await prisma.product.update({
+          where: { id: productId },
+          data: {
+            variant: existingVariants.length > 0 ? existingVariants.join(', ') : existingProduct.variant,
+            size: existingSizes.length > 0 ? existingSizes.join(', ') : existingProduct.size,
+          },
+        });
+      }
+    }
+  }
+
   return rows.length > 0 ? rows[0].id : null;
+}
+
+export async function syncNewProductSpecsHelper(
+  prisma: PrismaService,
+  newProductSpecs: any[] = []
+) {
+  if (!Array.isArray(newProductSpecs) || newProductSpecs.length === 0) return;
+
+  const productSpecsMap = new Map<number, { variants: Set<string>; sizes: Set<string> }>();
+  for (const sp of newProductSpecs) {
+    const pid = Number(sp?.productId || sp?.product_id || 0);
+    if (!pid) continue;
+    if (!productSpecsMap.has(pid)) {
+      productSpecsMap.set(pid, { variants: new Set(), sizes: new Set() });
+    }
+    const spec = productSpecsMap.get(pid)!;
+    const v = String(sp?.variant || sp?.variation || '').trim();
+    const s = String(sp?.size || '').trim();
+    if (v && v !== '-' && v.toLowerCase() !== 'default') spec.variants.add(v);
+    if (s && s !== '-') spec.sizes.add(s);
+  }
+
+  const parseTagList = (raw?: string | null): string[] =>
+    raw
+      ? String(raw)
+          .split(/[,;\n]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+  for (const [productId, spec] of productSpecsMap.entries()) {
+    const existingProduct = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!existingProduct) continue;
+
+    const existingVariants = parseTagList(existingProduct.variant);
+    const existingSizes = parseTagList(existingProduct.size);
+
+    const lowerExistingVars = new Set(existingVariants.map((v) => v.toLowerCase()));
+    const lowerExistingSizes = new Set(existingSizes.map((s) => s.toLowerCase()));
+
+    let hasChanges = false;
+    for (const v of spec.variants) {
+      if (!lowerExistingVars.has(v.toLowerCase())) {
+        existingVariants.push(v);
+        lowerExistingVars.add(v.toLowerCase());
+        hasChanges = true;
+      }
+    }
+    for (const s of spec.sizes) {
+      if (!lowerExistingSizes.has(s.toLowerCase())) {
+        existingSizes.push(s);
+        lowerExistingSizes.add(s.toLowerCase());
+        hasChanges = true;
+      }
+    }
+
+    if (hasChanges) {
+      await prisma.product.update({
+        where: { id: productId },
+        data: {
+          variant: existingVariants.length > 0 ? existingVariants.join(', ') : existingProduct.variant,
+          size: existingSizes.length > 0 ? existingSizes.join(', ') : existingProduct.size,
+        },
+      });
+    }
+  }
 }

@@ -8,11 +8,14 @@ import {
   handleUnavailableTransitionHelper,
 } from './helpers/purchase-transitions.helper';
 import {
+  embedSortingIntoNotes,
+  extractSortingFromNotes,
   formatConsolidatedPurchase,
   groupPurchasesByNumber,
 } from './helpers/purchase-consolidation.helper';
 import {
   cleanPurchaseData,
+  syncNewProductSpecsHelper,
   updateConsolidatedPurchaseHelper,
 } from './helpers/purchase-update.helper';
 
@@ -102,7 +105,12 @@ export class PurchasesService {
         order_item: {
           include: {
             product: true,
-            order: { include: { customer: true } },
+            order: {
+              include: {
+                customer: true,
+                invoice_links: { include: { invoice: true } },
+              },
+            },
           },
         },
       },
@@ -124,15 +132,11 @@ export class PurchasesService {
 
   async findOne(id: number) {
     const target = await this.prisma.purchase.findUniqueOrThrow({ where: { id } });
-    const where: any =
-      target.status === 'WAITING_PURCHASE' && target.period_id
-        ? {
-            OR: [
-              { purchase_number: target.purchase_number },
-              { period_id: target.period_id, status: 'WAITING_PURCHASE' },
-            ],
-          }
-        : { purchase_number: target.purchase_number };
+    const where: any = target.purchase_number
+      ? { purchase_number: target.purchase_number }
+      : target.status === 'WAITING_PURCHASE' && target.period_id
+        ? { period_id: target.period_id, status: 'WAITING_PURCHASE' }
+        : { id: target.id };
 
     const allRows = await this.prisma.purchase.findMany({
       where,
@@ -143,7 +147,12 @@ export class PurchasesService {
         order_item: {
           include: {
             product: true,
-            order: { include: { customer: true } },
+            order: {
+              include: {
+                customer: true,
+                invoice_links: { include: { invoice: true } },
+              },
+            },
           },
         },
       },
@@ -164,9 +173,8 @@ export class PurchasesService {
     const map = new Map<string, string[]>();
     raw.forEach((r) => {
       const key =
-        r.status === 'WAITING_PURCHASE' && r.period_id
-          ? `EVENT_${r.period_id}_WAITING`
-          : r.purchase_number;
+        r.purchase_number ||
+        (r.period_id ? `EVENT_${r.period_id}_WAITING` : 'UNKNOWN');
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r.status);
     });
@@ -174,6 +182,7 @@ export class PurchasesService {
     const summary = {
       TOTAL: map.size,
       WAITING_PURCHASE: 0,
+      SORTING: 0,
       PURCHASED: 0,
       UNAVAILABLE: 0,
     };
@@ -181,6 +190,7 @@ export class PurchasesService {
     for (const statuses of map.values()) {
       if (statuses.every((s) => s === 'PURCHASED')) summary.PURCHASED++;
       else if (statuses.every((s) => s === 'UNAVAILABLE')) summary.UNAVAILABLE++;
+      else if (statuses.some((s) => s === 'SORTING')) summary.SORTING++;
       else summary.WAITING_PURCHASE++;
     }
 
@@ -597,6 +607,37 @@ export class PurchasesService {
     const nextQty = Number(cleaned.quantity ?? current.quantity);
     const targetStatus = cleaned.status || current.status;
 
+    if (Array.isArray(body.newProductSpecs) && body.newProductSpecs.length > 0) {
+      await syncNewProductSpecsHelper(this.prisma, body.newProductSpecs);
+    }
+
+    const existingExtracted = extractSortingFromNotes(current.notes);
+    const nextCleanNotes =
+      cleaned.notes !== undefined ? cleaned.notes : existingExtracted.cleanNotes;
+    const nextSortingLines = Array.isArray(body.sortingLines)
+      ? body.sortingLines
+      : existingExtracted.sortingLines;
+    const mergedNotes = embedSortingIntoNotes(nextCleanNotes, nextSortingLines);
+    if (cleaned.notes !== undefined || Array.isArray(body.sortingLines)) {
+      cleaned.notes = mergedNotes;
+    }
+
+    // If updating a consolidated purchase batch (e.g. status transition to SORTING or updating sortingLines), update all rows sharing the same purchase_number
+    if (current.purchase_number && (body.status || Array.isArray(body.sortingLines))) {
+      await this.prisma.purchase.updateMany({
+        where: { purchase_number: current.purchase_number },
+        data: {
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.shopper_id !== undefined ? { shopper_id: Number(body.shopper_id) || null } : {}),
+          ...(body.payment_method !== undefined ? { payment_method: body.payment_method } : {}),
+          ...(cleaned.notes !== undefined || Array.isArray(body.sortingLines)
+            ? { notes: mergedNotes }
+            : {}),
+          ...(body.receipt_url !== undefined ? { receipt_url: body.receipt_url } : {}),
+        },
+      });
+    }
+
     const data = await this.prisma.purchase.update({
       where: { id: current.id },
       data: {
@@ -653,6 +694,10 @@ export class PurchasesService {
           userId
         );
       }
+    }
+
+    if (current.purchase_number) {
+      return this.findOne(current.id);
     }
 
     return data;

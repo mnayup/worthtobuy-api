@@ -49,6 +49,7 @@ enum OrderStatus {
 
 enum PurchaseStatus {
   WAITING_PURCHASE
+  SORTING
   PURCHASED
   UNAVAILABLE
   PENDING

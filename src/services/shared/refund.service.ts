@@ -65,28 +65,84 @@ export class RefundService {
     const item = await this.prisma.order_item.findUniqueOrThrow({
       where: { id: order_item_id },
       include: {
-        order: { include: { invoice_links: { include: { invoice: true } }, refunds: true } },
+        order: {
+          include: {
+            invoice_links: {
+              include: {
+                invoice: {
+                  include: {
+                    payments: { where: { status: 'VERIFIED', deleted_at: null } },
+                  },
+                },
+              },
+            },
+            payments: { where: { status: 'VERIFIED', deleted_at: null } },
+            refunds: { where: { deleted_at: null } },
+          },
+        },
         product: true,
       },
     });
     const source_key = `ITEM-${order_item_id}-UNAVAILABLE`;
+    const existing = await this.prisma.refund.findUnique({ where: { source_key } });
+
+    // Check invoice_order first: only create refund if customer has already paid DP on the invoice/order
+    const activeInvoiceLink = (item.order.invoice_links || []).find(
+      (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+    );
+    const linkedInvoice = activeInvoiceLink?.invoice;
+    const invoicePaid = linkedInvoice
+      ? Number(linkedInvoice.paid_amount || 0) + Number(linkedInvoice.deposit_amount || 0)
+      : 0;
+    const verifiedInvoicePayments = (linkedInvoice?.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+    const verifiedOrderPayments = (item.order.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+    const orderPaid = Number(item.order.paid_amount || 0);
+
+    const hasCustomerPaidDp =
+      Boolean(linkedInvoice) &&
+      (invoicePaid > 0 || verifiedInvoicePayments > 0 || verifiedOrderPayments > 0) &&
+      orderPaid > 0 &&
+      !['NEW', 'WAITING_DP'].includes(item.order.status);
+
     const itemAmount = Number(item.unit_price_foreign) * item.quantity;
     const otherActiveRefunds = item.order.refunds
-      .filter(refund => refund.source === 'UNAVAILABLE_ITEM' && refund.source_key !== source_key && refund.status !== 'REJECTED')
+      .filter(
+        (refund) =>
+          refund.source === 'UNAVAILABLE_ITEM' &&
+          refund.source_key !== source_key &&
+          refund.status !== 'REJECTED'
+      )
       .reduce((sum, refund) => sum + Number(refund.amount), 0);
-    const paidAvailable = Math.max(0, Number(item.order.paid_amount) - otherActiveRefunds);
-    const amount = Math.min(itemAmount, paidAvailable);
-    const existing = await this.prisma.refund.findUnique({ where: { source_key } });
-    if (amount <= 0) {
-      if (!existing || existing.status === 'PAID' || existing.status === 'REJECTED') return existing;
-      if (existing.status === 'REQUESTED') return this.prisma.refund.delete({ where: { id: existing.id } });
+    const paidAvailable = hasCustomerPaidDp
+      ? Math.max(0, orderPaid - otherActiveRefunds)
+      : 0;
+    const amount = hasCustomerPaidDp ? Math.min(itemAmount, paidAvailable) : 0;
+
+    if (!hasCustomerPaidDp || amount <= 0) {
+      if (!existing || existing.status === 'PAID' || existing.status === 'REJECTED') {
+        return null;
+      }
+      if (existing.status === 'REQUESTED') {
+        await this.prisma.refund.delete({ where: { id: existing.id } });
+        return null;
+      }
       return this.prisma.refund.update({
         where: { id: existing.id },
-        data: { status: 'REJECTED', notes: 'Dibatalkan otomatis karena belum ada pembayaran yang perlu dikembalikan.' },
+        data: {
+          status: 'REJECTED',
+          notes: 'Dibatalkan otomatis karena belum ada pembayaran DP yang perlu dikembalikan.',
+        },
       });
     }
     if (existing?.status === 'PAID') return existing;
-    const invoice_id = item.order.invoice_links[0]?.invoice_id;
+    const invoice_id = linkedInvoice?.id ?? item.order.invoice_links[0]?.invoice_id;
+    const customer_id = item.order.customer_id || linkedInvoice?.customer_id || null;
     const label = item.product?.name || item.manual_product_name || `Item #${item.id}`;
     if (existing) {
       return this.prisma.refund.update({
@@ -95,6 +151,7 @@ export class RefundService {
           amount,
           order_id: item.order_id,
           invoice_id,
+          customer_id,
           reason: `Barang tidak dapat: ${label}.`,
         },
       });
@@ -105,6 +162,7 @@ export class RefundService {
         amount,
         order_id: item.order_id,
         invoice_id,
+        customer_id,
         reason: `Barang tidak dapat: ${label}.`,
         source: 'UNAVAILABLE_ITEM',
       },
@@ -112,6 +170,7 @@ export class RefundService {
         refund_number: sequence('REF-AUTO'),
         order_id: item.order_id,
         invoice_id,
+        customer_id,
         amount,
         reason: `Barang tidak dapat: ${label}.`,
         source: 'UNAVAILABLE_ITEM',

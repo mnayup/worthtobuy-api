@@ -365,6 +365,34 @@ export class ShipmentsService {
           cleaned,
           targetStatus,
         });
+      } else if (cleaned.actual_shipping_cost === null && current.actual_shipping_cost !== null) {
+        const prevPositiveDiff = Math.max(0, Number(current.shipping_cost_difference || 0));
+        cleaned.shipping_cost_difference = null;
+        if (prevPositiveDiff > 0 && current.order && current.order_id) {
+          const baseTotalBill = Math.max(0, Number(current.order.total_bill || 0) - prevPositiveDiff);
+          const baseCustomerShipping = Math.max(
+            0,
+            Number(current.order.customer_shipping || 0) - prevPositiveDiff
+          );
+          const paidAmount = Number(current.order.paid_amount || 0);
+          await this.prisma.order.update({
+            where: { id: current.order_id },
+            data: {
+              customer_shipping: baseCustomerShipping,
+              total_bill: baseTotalBill,
+              outstanding_amount: Math.max(0, baseTotalBill - paidAmount),
+            },
+          });
+          await this.prisma.invoice_order.updateMany({
+            where: { order_id: current.order_id },
+            data: { snapshot_amount: baseTotalBill },
+          });
+          await this.invoiceCalcService.refreshPaymentTarget({ order_id: current.order_id });
+        }
+        if (current.status === 'WAITING_SETTLEMENT' && !cleaned.status) {
+          cleaned.status = current.packed_at ? 'PACKED' : 'WAITING_PACKING';
+          targetStatus = cleaned.status;
+        }
       }
     }
 
@@ -589,9 +617,9 @@ export class ShipmentsService {
       },
     });
 
-    if (shipment.status !== 'WAITING_PACKING' || Boolean(shipment.packed_at)) {
+    if (['DELIVERED', 'COMPLETED'].includes(shipment.status)) {
       throw new BadRequestException(
-        'Pemisahan pengiriman hanya dapat dilakukan untuk pengiriman yang belum dipacking (Menunggu Packing).'
+        'Pemisahan pengiriman tidak dapat dilakukan untuk pengiriman yang sudah selesai (Delivered).'
       );
     }
 
@@ -622,8 +650,35 @@ export class ShipmentsService {
 
     const remainingOrders = allOrders.filter((o) => !splitOrderIds.includes(o.id));
     const ordersToSeparate = allOrders.filter((o) => splitOrderIds.includes(o.id));
+    const prevPositiveDiff = Math.max(0, Number(shipment.shipping_cost_difference || 0));
+    const getBaseOrderShipping = (ord: any) =>
+      ord.id === shipment.order_id
+        ? Math.max(0, Number(ord.customer_shipping || 0) - prevPositiveDiff)
+        : Number(ord.customer_shipping || 0);
+    const isAlreadyPacked =
+      Boolean(shipment.packed_at) || shipment.status !== 'WAITING_PACKING';
 
-    return await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 0. If original shipment had positive shipping variance applied to shipment.order, revert it first
+      // so it can be cleanly recalculated against the remaining shipment cost after splitting.
+      if (prevPositiveDiff > 0 && shipment.order && shipment.order_id) {
+        const baseTotalBill = Math.max(0, Number(shipment.order.total_bill || 0) - prevPositiveDiff);
+        const baseCustomerShipping = getBaseOrderShipping(shipment.order);
+        const paidAmount = Number(shipment.order.paid_amount || 0);
+        await tx.order.update({
+          where: { id: shipment.order_id },
+          data: {
+            customer_shipping: baseCustomerShipping,
+            total_bill: baseTotalBill,
+            outstanding_amount: Math.max(0, baseTotalBill - paidAmount),
+          },
+        });
+        await tx.invoice_order.updateMany({
+          where: { order_id: shipment.order_id },
+          data: { snapshot_amount: baseTotalBill },
+        });
+      }
+
       // 1. Remove separated orders from original shipment_orders
       await tx.shipment_order.deleteMany({
         where: {
@@ -649,7 +704,7 @@ export class ShipmentsService {
         .join(', ');
 
       const remainingCost = remainingOrders.reduce(
-        (sum, o) => sum + Number(o.customer_shipping || 0),
+        (sum, o) => sum + getBaseOrderShipping(o),
         0
       );
 
@@ -658,6 +713,10 @@ export class ShipmentsService {
         data: {
           order_id: newPrimaryOrderId,
           shipping_cost: remainingCost,
+          shipping_cost_difference:
+            shipment.actual_shipping_cost !== null && shipment.actual_shipping_cost !== undefined
+              ? 0
+              : shipment.shipping_cost_difference,
           notes: remainingSummary
             ? `Item to pack: ${remainingSummary}`
             : shipment.notes,
@@ -720,9 +779,15 @@ export class ShipmentsService {
             address: sepOrd.customer?.address?.trim() || shipment.address,
             courier: shipment.courier || 'JNE',
             service_type: shipment.service_type,
+            shipping_counter_id: shipment.shipping_counter_id,
+            shipping_method: shipment.shipping_method || 'MANUAL',
+            shopee_username: shipment.shopee_username,
             tracking_number: null,
-            shipping_cost: Number(sepOrd.customer_shipping || 0),
-            status: 'WAITING_PACKING',
+            shipping_cost: getBaseOrderShipping(sepOrd),
+            status: isAlreadyPacked ? 'PACKED' : 'WAITING_PACKING',
+            packed_at: isAlreadyPacked ? shipment.packed_at || new Date() : null,
+            proof_before_url: isAlreadyPacked ? shipment.proof_before_url : null,
+            proof_url: isAlreadyPacked ? shipment.proof_url : null,
             notes: sepSummary
               ? `Item to pack: ${sepSummary}`
               : `Pengiriman dipisahkan untuk pesanan ${sepOrd.order_number}.`,
@@ -764,6 +829,62 @@ export class ShipmentsService {
         created_shipments: createdShipments,
       };
     });
+
+    // 4. If original shipment already had actual_shipping_cost, recalculate its variance against remainingCost
+    if (
+      shipment.actual_shipping_cost !== null &&
+      shipment.actual_shipping_cost !== undefined &&
+      shipment.shipping_method !== 'SHOPEE'
+    ) {
+      const cleanedVariance: any = {
+        actual_shipping_cost: Number(shipment.actual_shipping_cost),
+      };
+      await processShippingCostVariance({
+        prisma: this.prisma,
+        refundService: this.refundService,
+        invoiceCalcService: this.invoiceCalcService,
+        current: result.original_shipment,
+        cleaned: cleanedVariance,
+        targetStatus: result.original_shipment.status,
+      });
+      result.original_shipment = await this.prisma.shipment.update({
+        where: { id: shipment.id },
+        data: {
+          shipping_cost_difference: cleanedVariance.shipping_cost_difference,
+          ...(cleanedVariance.status ? { status: cleanedVariance.status } : {}),
+        },
+        include: {
+          customer: true,
+          shipping_counter: true,
+          order: {
+            include: {
+              items: { include: { product: true } },
+              invoice_links: { include: { invoice: true } },
+            },
+          },
+          shipment_orders: {
+            include: {
+              order: {
+                include: {
+                  items: { include: { product: true } },
+                  invoice_links: { include: { invoice: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+    } else if (result.original_shipment.order_id) {
+      await this.invoiceCalcService.refreshPaymentTarget({
+        order_id: result.original_shipment.order_id,
+      });
+    }
+
+    for (const sepOrd of ordersToSeparate) {
+      await this.invoiceCalcService.refreshPaymentTarget({ order_id: sepOrd.id });
+    }
+
+    return result;
   }
 
   async ensureShipmentForOrder(order_id: number) {
