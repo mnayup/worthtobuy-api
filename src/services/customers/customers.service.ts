@@ -136,6 +136,17 @@ export class CustomersService {
   }
 
   async getDepositBalance(customer_id: number, excludeInvoiceId?: number) {
+    if (!customer_id || isNaN(customer_id)) {
+      return {
+        customer_id: 0,
+        availableDeposit: 0,
+        totalDeposits: 0,
+        totalUsed: 0,
+        depositHistory: [],
+        usedInvoices: [],
+      };
+    }
+
     const [paidDeposits, usedInvoices] = await Promise.all([
       this.prisma.refund.findMany({
         where: {
