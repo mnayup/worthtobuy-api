@@ -98,6 +98,28 @@ export async function fetchPublicInvoiceData(
     throw new NotFoundException(`Invoice "${cleanNumber}" tidak ditemukan.`);
   }
 
+  // Ensure total_bill and outstanding_amount exclude unavailable orders/items
+  if (Array.isArray(invoice.orders) && invoice.orders.length > 0) {
+    const isOrderUnavailable = (ord: any) =>
+      ord?.status === 'UNAVAILABLE' ||
+      (Array.isArray(ord?.items) &&
+        ord.items.length > 0 &&
+        ord.items.every((it: any) => it.fulfillment_status === 'UNAVAILABLE'));
+
+    const calculatedTotalBill = invoice.orders.reduce((sum, link) => {
+      if (isOrderUnavailable(link.order)) return sum;
+      return sum + Number(link.order?.total_bill ?? link.snapshot_amount ?? 0);
+    }, 0);
+
+    const paidAmount = Number(invoice.paid_amount || 0);
+    const depositAmount = Number(invoice.deposit_amount || 0);
+    const effectivePaid = paidAmount + depositAmount;
+    const calculatedOutstanding = Math.max(0, calculatedTotalBill - effectivePaid);
+
+    (invoice as any).total_bill = calculatedTotalBill;
+    (invoice as any).outstanding_amount = calculatedOutstanding;
+  }
+
   const [rawSettings, brandRecord, invoiceRecord] = await Promise.all([
     prisma.setting.findMany(),
     prisma.brand_setting.findFirst({ orderBy: { id: 'desc' } }),

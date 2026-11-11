@@ -61,6 +61,12 @@ export class InvoiceCalcService {
           include: {
             order: {
               include: {
+                items: {
+                  select: {
+                    id: true,
+                    fulfillment_status: true,
+                  },
+                },
                 shipments: true,
                 shipment_orders: { include: { shipment: true } },
               },
@@ -87,16 +93,26 @@ export class InvoiceCalcService {
       }),
     ]);
 
+    const isOrderUnavailable = (ord: any): boolean => {
+      if (!ord) return false;
+      if (ord.status === 'UNAVAILABLE') return true;
+      const items: any[] = ord.items || [];
+      if (items.length > 0 && items.every((it) => it.fulfillment_status === 'UNAVAILABLE')) {
+        return true;
+      }
+      return false;
+    };
+
+    const getOrderBillableAmount = (link: any): number => {
+      if (isOrderUnavailable(link.order)) return 0;
+      return Number(link.order ? link.order.total_bill : link.snapshot_amount || 0);
+    };
+
     const paid_amount = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
     const deposit_amount = Number(invoice.deposit_amount || 0);
 
     const total_bill = invoice.orders.length > 0
-      ? invoice.orders.reduce((sum, link) => {
-          const orderTotal = link.order
-            ? Number(link.order.total_bill)
-            : Number(link.snapshot_amount || 0);
-          return sum + orderTotal;
-        }, 0)
+      ? invoice.orders.reduce((sum, link) => sum + getOrderBillableAmount(link), 0)
       : Number(invoice.total_bill);
 
     const effectivePaid = paid_amount + deposit_amount;
@@ -144,12 +160,13 @@ export class InvoiceCalcService {
     // exceeds that order's total_bill (e.g. customer paid the whole invoice against a single order),
     // cap the order's direct allocation at its total_bill and release the excess into invoicePool
     // so sibling orders in the same invoice can be fulfilled and settled.
+    // Also, if an order is UNAVAILABLE, it should not consume direct payments unless already allocated.
     for (const link of invoice.orders) {
-      const total = Number(link.order?.total_bill ?? link.snapshot_amount ?? 0);
+      const billable = getOrderBillableAmount(link);
       const direct = directByOrder.get(link.order_id) || 0;
-      if (direct > total) {
-        const excess = direct - total;
-        directByOrder.set(link.order_id, total);
+      if (direct > billable) {
+        const excess = direct - billable;
+        directByOrder.set(link.order_id, billable);
         invoicePool += excess;
       }
     }
@@ -177,10 +194,11 @@ export class InvoiceCalcService {
 
     // Pass 1: Allocate invoicePool to each order's base bill (excluding positive shipping variance)
     // so that an ongkir shortage on one order never steals base payment from sibling orders.
+    // Unavailable orders have a billable amount of 0 and will not consume invoicePool.
     const baseAllocByOrder = new Map<number, number>();
     for (const link of sortedLinks) {
-      const total = Number(link.order.total_bill);
-      const variance = getOrderPositiveShippingVariance(link.order);
+      const total = getOrderBillableAmount(link);
+      const variance = isOrderUnavailable(link.order) ? 0 : getOrderPositiveShippingVariance(link.order);
       const baseTotal = Math.max(0, total - variance);
       const direct = directByOrder.get(link.order_id) || 0;
       const baseNeed = Math.max(0, baseTotal - direct);
@@ -192,7 +210,7 @@ export class InvoiceCalcService {
     // Pass 2: Allocate any remaining invoicePool to shipping variance / remaining bill
     const totalAllocByOrder = new Map<number, number>();
     for (const link of sortedLinks) {
-      const total = Number(link.order.total_bill);
+      const total = getOrderBillableAmount(link);
       const direct = directByOrder.get(link.order_id) || 0;
       const baseAlloc = baseAllocByOrder.get(link.order_id) || 0;
       const remainingNeed = Math.max(0, total - (direct + baseAlloc));
@@ -202,7 +220,8 @@ export class InvoiceCalcService {
     }
 
     for (const link of sortedLinks) {
-      const total = Number(link.order.total_bill);
+      const isUnavailable = isOrderUnavailable(link.order);
+      const total = isUnavailable ? 0 : Number(link.order.total_bill);
       const direct = directByOrder.get(link.order_id) || 0;
       const allocation = totalAllocByOrder.get(link.order_id) || 0;
       const orderPaid = direct + allocation;
@@ -221,7 +240,9 @@ export class InvoiceCalcService {
 
       let nextStatus = link.order.status;
       let shouldEnsureShipment = false;
-      if (isReadyStockOrder) {
+      if (isUnavailable) {
+        nextStatus = 'UNAVAILABLE';
+      } else if (isReadyStockOrder) {
         if (orderPaid > 0 || isPriorityCustomer) {
           nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
           shouldEnsureShipment = true;
@@ -347,7 +368,14 @@ export class InvoiceCalcService {
 
     let nextStatus = order.status;
     let shouldEnsureShipment = false;
-    if (isReadyStockOrder) {
+    const isUnavailable =
+      order.status === 'UNAVAILABLE' ||
+      ((orderData?.items || []).length > 0 &&
+        orderData!.items.every((it) => it.fulfillment_status === 'UNAVAILABLE'));
+
+    if (isUnavailable) {
+      nextStatus = 'UNAVAILABLE';
+    } else if (isReadyStockOrder) {
       if (paid_amount > 0 || isPriorityCustomer) {
         nextStatus = outstanding_amount <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
         shouldEnsureShipment = true;
