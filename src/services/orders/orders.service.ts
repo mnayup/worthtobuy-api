@@ -153,6 +153,57 @@ export class OrdersService {
         : 'WAITING_PURCHASE'
       : 'NEW';
 
+    // Validate target_invoice_id BEFORE creating the order to prevent adding to an already-packed invoice
+    const targetInvoiceId = body.target_invoice_id || body.targetInvoiceId;
+    let validTargetInvoiceId: number | null = null;
+    if (targetInvoiceId) {
+      const invId = Number(targetInvoiceId);
+      const existingInv = await this.prisma.invoice.findFirst({
+        where: {
+          id: invId,
+          customer_id: customer_id!,
+          deleted_at: null,
+          status: { not: 'CANCELLED' },
+        },
+        include: {
+          orders: { select: { order_id: true } },
+        },
+      });
+      if (!existingInv) {
+        throw new BadRequestException(
+          'Invoice tujuan tidak ditemukan atau tidak sesuai dengan pelanggan.'
+        );
+      }
+      const invOrderIds = existingInv.orders.map((o) => o.order_id);
+      if (invOrderIds.length > 0) {
+        const invShipments = await this.prisma.shipment.findMany({
+          where: {
+            OR: [
+              { order_id: { in: invOrderIds } },
+              { shipment_orders: { some: { order_id: { in: invOrderIds } } } },
+            ],
+          },
+        });
+        const hasPackedShipment = invShipments.some(
+          (s) =>
+            [
+              'PACKED',
+              'READY',
+              'WAITING_SETTLEMENT',
+              'HANDED_TO_COURIER',
+              'IN_TRANSIT',
+              'DELIVERED',
+            ].includes(s.status) || Boolean(s.packed_at)
+        );
+        if (hasPackedShipment) {
+          throw new BadRequestException(
+            `Tidak dapat menambahkan pesanan baru ke invoice ${existingInv.invoice_number} karena pengiriman dari invoice tersebut sudah dipacking. Silakan buat pesanan baru dengan invoice terpisah (Anda tetap dapat menggabungkan pengiriman melalui menu Shipment).`
+          );
+        }
+      }
+      validTargetInvoiceId = invId;
+    }
+
     const data = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
@@ -193,23 +244,16 @@ export class OrdersService {
     });
 
     // If an existing unpacked invoice was selected, attach this order to it
-    const targetInvoiceId = body.target_invoice_id || body.targetInvoiceId;
     let attachedInvoiceId: number | null = null;
-    if (targetInvoiceId) {
-      const invId = Number(targetInvoiceId);
-      const existingInv = await this.prisma.invoice.findFirst({
-        where: { id: invId, customer_id: data.customer_id, deleted_at: null },
+    if (validTargetInvoiceId) {
+      attachedInvoiceId = validTargetInvoiceId;
+      await this.prisma.invoice_order.create({
+        data: {
+          invoice_id: validTargetInvoiceId,
+          order_id: data.id,
+          snapshot_amount: data.total_bill,
+        },
       });
-      if (existingInv) {
-        attachedInvoiceId = invId;
-        await this.prisma.invoice_order.create({
-          data: {
-            invoice_id: invId,
-            order_id: data.id,
-            snapshot_amount: data.total_bill,
-          },
-        });
-      }
     }
 
     // Optional initial DP / payment entered together when creating the order
@@ -255,15 +299,18 @@ export class OrdersService {
     });
 
     const isPriority = data.customer?.segment === 'PRIORITY';
-    const isLiveOrReadyOrder =
-      isLiveOrReadyPeriod ||
+    const allItemsFromStock =
+      period?.code === 'READY-STOCK' ||
       (data.items.length > 0 &&
         data.items.every(
-          (it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'
+          (it) =>
+            it.source_type === 'READY_STOCK' ||
+            it.purchase_status === 'PURCHASED' ||
+            it.product?.stock_mode === 'READY_STOCK'
         ));
 
-    if (isLiveOrReadyOrder) {
-      // Ready Stock & Live Shopping: skip Purchases and go directly to Shipment if VIP or DP paid
+    if (allItemsFromStock) {
+      // Orders fulfilled entirely from stock: skip Purchases and go directly to Shipment if VIP or DP paid
       if (isPriority || initialPaymentAmount > 0 || ['PURCHASED', 'WAITING_SETTLEMENT', 'READY_TO_SHIP'].includes(data.status)) {
         await this.invoiceCalcService.ensureShipmentForOrder(data.id);
       }
@@ -498,15 +545,17 @@ export class OrdersService {
       }
 
       const isPriority = data.customer?.segment === 'PRIORITY';
-      const isLiveOrReadyOrder =
-        data.period?.type === 'LIVE_SHOPPING' ||
+      const allItemsFromStock =
         data.period?.code === 'READY-STOCK' ||
         (data.items.length > 0 &&
           data.items.every(
-            (it) => it.source_type === 'READY_STOCK' || it.product?.stock_mode === 'READY_STOCK'
+            (it) =>
+              it.source_type === 'READY_STOCK' ||
+              it.purchase_status === 'PURCHASED' ||
+              it.product?.stock_mode === 'READY_STOCK'
           ));
 
-      if (isLiveOrReadyOrder) {
+      if (allItemsFromStock) {
         if (
           isPriority ||
           Number(data.paid_amount || 0) > 0 ||
@@ -515,7 +564,11 @@ export class OrdersService {
           await this.invoiceCalcService.ensureShipmentForOrder(data.id);
         }
       } else {
-        if (isPriority || ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)) {
+        if (
+          isPriority ||
+          Number(data.paid_amount || 0) > 0 ||
+          ['PURCHASED', 'WAITING_PURCHASE'].includes(data.status)
+        ) {
           await this.invoiceCalcService.ensurePurchasesForOrder(data.id);
         }
         if (['PURCHASED', 'READY_TO_SHIP'].includes(data.status)) {

@@ -5,6 +5,7 @@ import {
   ensurePurchasesForOrderHelper,
   ensureShipmentForOrderHelper,
 } from './helpers/order-fulfillment.helper';
+import { isOrderFullyPaid } from '../shipments/helpers/shipment-sync.helper';
 
 @Injectable()
 export class InvoiceCalcService {
@@ -76,7 +77,13 @@ export class InvoiceCalcService {
       },
     });
     const orderIds = invoice.orders.map((link) => link.order_id);
-    const [payments, settledOverpaymentRefunds, paidManualRefundsList, unresolvedItemRefunds] = await Promise.all([
+    const [
+      payments,
+      pendingPayments,
+      settledOverpaymentRefunds,
+      paidManualRefundsList,
+      unresolvedItemRefunds,
+    ] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           status: 'VERIFIED',
@@ -84,6 +91,14 @@ export class InvoiceCalcService {
           OR: [{ invoice_id }, ...(orderIds.length ? [{ order_id: { in: orderIds } }] : [])],
         },
         orderBy: [{ payment_date: 'asc' }, { id: 'asc' }],
+      }),
+      this.prisma.payment.findMany({
+        where: {
+          status: 'PENDING',
+          deleted_at: null,
+          OR: [{ invoice_id }, ...(orderIds.length ? [{ order_id: { in: orderIds } }] : [])],
+        },
+        select: { amount: true },
       }),
       this.prisma.refund.findMany({
         where: {
@@ -141,7 +156,27 @@ export class InvoiceCalcService {
       : Number(invoice.total_bill);
 
     const effectivePaid = paid_amount + deposit_amount;
+    const pendingTotal = pendingPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const outstanding_amount = Math.max(0, total_bill - effectivePaid);
+    const isInvoiceVerifiedFullPaid =
+      outstanding_amount <= 0 && (effectivePaid > 0 || total_bill <= 0);
+    const isInvoiceUploadedFullPaid =
+      !isInvoiceVerifiedFullPaid && total_bill > 0 && effectivePaid + pendingTotal >= total_bill;
+
+    const existingUnpackedShipments =
+      orderIds.length > 0
+        ? await this.prisma.shipment.findMany({
+            where: {
+              packed_at: null,
+              status: { in: ['WAITING_VERIFICATION', 'WAITING_PACKING'] as any },
+              OR: [
+                { order_id: { in: orderIds } },
+                { shipment_orders: { some: { order_id: { in: orderIds } } } },
+              ],
+            },
+            select: { id: true },
+          })
+        : [];
     const refundedOverpayment = settledOverpaymentRefunds.reduce(
       (sum, refund) => sum + Number(refund.amount),
       0
@@ -316,15 +351,27 @@ export class InvoiceCalcService {
           );
         const allKept =
           activeItems.length > 0 &&
-          activeItems.every((it) => it.fulfillment_status === 'KEPT');
+          activeItems.every((it) => it.fulfillment_status === 'KEPT' || Boolean(it.kept_until));
+
+        if (
+          !allKept &&
+          (isInvoiceVerifiedFullPaid ||
+            isInvoiceUploadedFullPaid ||
+            existingUnpackedShipments.length > 0)
+        ) {
+          shouldEnsureShipment = true;
+        }
 
         if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'WAITING_PURCHASE', 'PURCHASED'].includes(link.order.status)) {
           if (allItemsBought && !allKept) {
-            nextStatus = orderOutstanding <= 0 ? 'READY_TO_SHIP' : 'WAITING_SETTLEMENT';
-            if (orderOutstanding <= 0) {
+            nextStatus =
+              orderOutstanding <= 0 && isInvoiceVerifiedFullPaid
+                ? 'READY_TO_SHIP'
+                : 'WAITING_SETTLEMENT';
+            if (orderOutstanding <= 0 && isInvoiceVerifiedFullPaid) {
               shouldEnsureShipment = true;
             }
-          } else if (orderPaid > 0 || isPriorityCustomer) {
+          } else if (orderPaid > 0 || pendingTotal > 0 || isPriorityCustomer) {
             if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(link.order.status)) {
               nextStatus = 'WAITING_PURCHASE';
             }
@@ -332,7 +379,7 @@ export class InvoiceCalcService {
             nextStatus = 'WAITING_DP';
           }
         } else if (link.order.status === 'WAITING_SETTLEMENT' || link.order.status === 'READY_TO_SHIP') {
-          if (orderOutstanding <= 0) {
+          if (orderOutstanding <= 0 && isInvoiceVerifiedFullPaid) {
             const ship = await this.prisma.shipment.findFirst({
               where: {
                 OR: [
@@ -341,7 +388,7 @@ export class InvoiceCalcService {
                 ],
               },
             });
-            if (ship && ship.tracking_number) {
+            if (ship && ship.tracking_number && ship.packed_at) {
               nextStatus = 'SHIPPED';
               await this.prisma.shipment.update({
                 where: { id: ship.id },
@@ -349,7 +396,7 @@ export class InvoiceCalcService {
               });
             } else {
               nextStatus = 'READY_TO_SHIP';
-              if (ship && ship.status === 'WAITING_SETTLEMENT') {
+              if (ship && ['WAITING_SETTLEMENT', 'WAITING_VERIFICATION'].includes(ship.status)) {
                 await this.prisma.shipment.update({
                   where: { id: ship.id },
                   data: { status: ship.packed_at ? 'PACKED' : 'WAITING_PACKING' },
@@ -372,8 +419,56 @@ export class InvoiceCalcService {
         await this.ensureShipmentForOrder(link.order_id);
       }
 
-      if ((orderPaid > 0 || isPriorityCustomer) && !isReadyStockOrder) {
+      if ((orderPaid > 0 || pendingTotal > 0 || isPriorityCustomer) && !isReadyStockOrder) {
         await this.ensurePurchasesForOrder(link.order_id);
+      }
+    }
+
+    // Sync unpacked shipments status between WAITING_VERIFICATION and WAITING_PACKING
+    if (orderIds.length > 0) {
+      const unpackedShipments = await this.prisma.shipment.findMany({
+        where: {
+          packed_at: null,
+          status: { in: ['WAITING_VERIFICATION', 'WAITING_PACKING'] as any },
+          OR: [
+            { order_id: { in: orderIds } },
+            { shipment_orders: { some: { order_id: { in: orderIds } } } },
+          ],
+        },
+        include: {
+          order: {
+            include: {
+              invoice_links: { include: { invoice: true } },
+            },
+          },
+          shipment_orders: {
+            include: {
+              order: {
+                include: {
+                  invoice_links: { include: { invoice: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      for (const sh of unpackedShipments) {
+        const ordersMap = new Map<number, any>();
+        if (sh.order) ordersMap.set(sh.order.id, sh.order);
+        for (const so of sh.shipment_orders || []) {
+          if (so.order) ordersMap.set(so.order.id, so.order);
+        }
+        const shOrders = Array.from(ordersMap.values());
+        const allVerifiedPaid =
+          shOrders.length > 0 && shOrders.every((ord) => isOrderFullyPaid(ord));
+        const desiredStatus = allVerifiedPaid ? 'WAITING_PACKING' : 'WAITING_VERIFICATION';
+        if (sh.status !== desiredStatus) {
+          await this.prisma.shipment.update({
+            where: { id: sh.id },
+            data: { status: desiredStatus as any },
+          });
+        }
       }
     }
 
@@ -396,16 +491,27 @@ export class InvoiceCalcService {
   }
 
   async refreshOrderPayment(order_id: number) {
-    const [order, payments, invoiceLinks] = await Promise.all([
+    const [order, payments, pendingPayments, invoiceLinks] = await Promise.all([
       this.prisma.order.findUniqueOrThrow({ where: { id: order_id } }),
       this.prisma.payment.findMany({ where: { order_id, status: 'VERIFIED', deleted_at: null } }),
+      this.prisma.payment.findMany({
+        where: { order_id, status: 'PENDING', deleted_at: null },
+        select: { amount: true },
+      }),
       this.prisma.invoice_order.findMany({
         where: { order_id },
         include: { invoice: true },
       }),
     ]);
     const paid_amount = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+    const pendingTotal = pendingPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const outstanding_amount = Math.max(0, Number(order.total_bill) - paid_amount);
+    const isOrderVerifiedFullPaid =
+      outstanding_amount <= 0 && (paid_amount > 0 || Number(order.total_bill) <= 0);
+    const isOrderUploadedFullPaid =
+      !isOrderVerifiedFullPaid &&
+      Number(order.total_bill) > 0 &&
+      paid_amount + pendingTotal >= Number(order.total_bill);
 
     const orderData = await this.prisma.order.findUnique({
       where: { id: order_id },
@@ -449,7 +555,11 @@ export class InvoiceCalcService {
         );
       const allKept =
         activeItems.length > 0 &&
-        activeItems.every((it) => it.fulfillment_status === 'KEPT');
+        activeItems.every((it) => it.fulfillment_status === 'KEPT' || Boolean(it.kept_until));
+
+      if (!allKept && (isOrderVerifiedFullPaid || isOrderUploadedFullPaid)) {
+        shouldEnsureShipment = true;
+      }
 
       if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'WAITING_PURCHASE', 'PURCHASED'].includes(order.status)) {
         if (allItemsBought && !allKept) {
@@ -457,7 +567,7 @@ export class InvoiceCalcService {
           if (outstanding_amount <= 0) {
             shouldEnsureShipment = true;
           }
-        } else if (paid_amount > 0 || isPriorityCustomer) {
+        } else if (paid_amount > 0 || pendingTotal > 0 || isPriorityCustomer) {
           if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
             nextStatus = 'WAITING_PURCHASE';
           }
@@ -474,7 +584,7 @@ export class InvoiceCalcService {
               ],
             },
           });
-          if (ship && ship.tracking_number) {
+          if (ship && ship.tracking_number && ship.packed_at) {
             nextStatus = 'SHIPPED';
             await this.prisma.shipment.update({
               where: { id: ship.id },
@@ -482,7 +592,7 @@ export class InvoiceCalcService {
             });
           } else {
             nextStatus = 'READY_TO_SHIP';
-            if (ship && ship.status === 'WAITING_SETTLEMENT') {
+            if (ship && ['WAITING_SETTLEMENT', 'WAITING_VERIFICATION'].includes(ship.status)) {
               await this.prisma.shipment.update({
                 where: { id: ship.id },
                 data: { status: ship.packed_at ? 'PACKED' : 'WAITING_PACKING' },
@@ -505,7 +615,7 @@ export class InvoiceCalcService {
       await this.ensureShipmentForOrder(order_id);
     }
 
-    if ((paid_amount > 0 || isPriorityCustomer) && !isReadyStockOrder) {
+    if ((paid_amount > 0 || pendingTotal > 0 || isPriorityCustomer) && !isReadyStockOrder) {
       await this.ensurePurchasesForOrder(order_id);
     }
 

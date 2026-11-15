@@ -12,12 +12,12 @@ export class StockService {
     });
     const stockMode = product.stock_mode ?? product.stockMode;
     const isLiveShopping = product.period?.type === 'LIVE_SHOPPING';
-    if (!['READY_STOCK', 'BOTH'].includes(stockMode) && !isLiveShopping) {
-      throw new BadRequestException(`${product.name} bukan produk ready stock / live shopping.`);
-    }
     const stockQty = Number(product.stock_quantity ?? product.stockQuantity ?? 0);
     const reservedQty = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0);
     const available = stockQty - reservedQty;
+    if (!['READY_STOCK', 'BOTH'].includes(stockMode) && !isLiveShopping && available <= 0) {
+      throw new BadRequestException(`${product.name} bukan produk ready stock / live shopping.`);
+    }
     if (available < quantity) {
       throw new BadRequestException(`Stok ${product.name} tidak cukup. Tersedia ${available}, diminta ${quantity}.`);
     }
@@ -47,7 +47,8 @@ export class StockService {
     quantityDelta: number,
     userId?: number,
     referenceId?: string,
-    notes = 'Penambahan stok dari pembelian Live Shopping.'
+    notes = 'Penambahan stok dari pembelian event.',
+    referenceType = 'PURCHASE'
   ) {
     if (quantityDelta === 0) return null;
     const product = await db.product.findUniqueOrThrow({ where: { id: productId } });
@@ -63,7 +64,7 @@ export class StockService {
         movement_type: quantityDelta > 0 ? 'IN' : 'ADJUSTMENT',
         quantity: quantityDelta,
         balance_after: nextStock,
-        reference_type: 'PURCHASE',
+        reference_type: referenceType,
         reference_id: referenceId,
         notes,
         user_id: userId,

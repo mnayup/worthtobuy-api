@@ -88,6 +88,7 @@ export class ShipmentsService {
     });
     const summary: Record<string, number> = {
       TOTAL: shipments.length,
+      WAITING_VERIFICATION: 0,
       WAITING_PACKING: 0,
       PACKED: 0,
       READY: 0,
@@ -181,7 +182,22 @@ export class ShipmentsService {
           order: {
             include: {
               items: { include: { product: true } },
-              invoice_links: { include: { invoice: true } },
+              payments: {
+                where: { deleted_at: null },
+                orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+              },
+              invoice_links: {
+                include: {
+                  invoice: {
+                    include: {
+                      payments: {
+                        where: { deleted_at: null },
+                        orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                      },
+                    },
+                  },
+                },
+              },
             },
           },
           shipment_orders: {
@@ -189,7 +205,22 @@ export class ShipmentsService {
               order: {
                 include: {
                   items: { include: { product: true } },
-                  invoice_links: { include: { invoice: true } },
+                  payments: {
+                    where: { deleted_at: null },
+                    orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                  },
+                  invoice_links: {
+                    include: {
+                      invoice: {
+                        include: {
+                          payments: {
+                            where: { deleted_at: null },
+                            orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                          },
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -297,7 +328,9 @@ export class ShipmentsService {
 
     const isPackingAttempt =
       (cleaned.status === 'PACKED' || targetStatus === 'PACKED' || targetStatus === 'READY') &&
-      current.status === 'WAITING_PACKING';
+      ['WAITING_VERIFICATION', 'WAITING_PACKING'].includes(current.status);
+    const isVerifyToPackingAttempt =
+      targetStatus === 'WAITING_PACKING' && current.status === 'WAITING_VERIFICATION';
     const isSetResiAttempt =
       (!isShopee &&
         cleaned.tracking_number !== undefined &&
@@ -306,7 +339,7 @@ export class ShipmentsService {
       (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) &&
         !['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(current.status));
 
-    if (isPackingAttempt || isSetResiAttempt) {
+    if (isPackingAttempt || isSetResiAttempt || isVerifyToPackingAttempt) {
       const allOrdersToCheck = [
         current.order,
         ...(current.shipment_orders || []).map((so) => so.order),
@@ -314,16 +347,22 @@ export class ShipmentsService {
 
       const hasUnpaidOrder = allOrdersToCheck.some((ord) => !isOrderFullyPaid(ord));
       if (hasUnpaidOrder) {
+        if (isVerifyToPackingAttempt) {
+          throw new BadRequestException(
+            'Pembayaran penuh (Full Payment) belum lunas atau belum terverifikasi. ' +
+              'Silakan verifikasi bukti pembayaran terlebih dahulu.'
+          );
+        }
         if (isPackingAttempt) {
           throw new BadRequestException(
-            'Pesanan belum lunas (Full Payment). ' +
-              'Proses packing tidak dapat dilakukan sebelum pembayaran lunas.'
+            'Pesanan belum lunas (Full Payment) atau pembayaran belum diverifikasi. ' +
+              'Proses packing tidak dapat dilakukan sebelum pembayaran lunas dan terverifikasi.'
           );
         }
         if (isSetResiAttempt) {
           throw new BadRequestException(
-            'Pesanan belum lunas (Full Payment). ' +
-              'Penginputan nomor resi tidak dapat dilakukan sebelum pembayaran lunas.'
+            'Pesanan belum lunas (Full Payment) atau pembayaran belum diverifikasi. ' +
+              'Penginputan nomor resi tidak dapat dilakukan sebelum pembayaran lunas dan terverifikasi.'
           );
         }
       }
@@ -474,13 +513,15 @@ export class ShipmentsService {
       );
     }
 
-    // 2. Verify all shipments are not yet packed (WAITING_PACKING and packed_at is null)
-    const hasPacked = shipments.some(
-      (s) => s.status !== 'WAITING_PACKING' || Boolean(s.packed_at)
+    // 2. Verify all shipments are not yet shipped / handed to courier
+    const hasShippedOrFinal = shipments.some((s) =>
+      ['HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'FAILED', 'RETURNED'].includes(
+        s.status
+      )
     );
-    if (hasPacked) {
+    if (hasShippedOrFinal) {
       throw new BadRequestException(
-        'Penggabungan pengiriman hanya dapat dilakukan jika semua status pengiriman belum dipacking (Menunggu Packing).'
+        'Penggabungan pengiriman hanya dapat dilakukan untuk pengiriman yang belum diserahkan ke kurir / belum dikirim.'
       );
     }
 
@@ -497,6 +538,21 @@ export class ShipmentsService {
     }
     const allOrders = Array.from(ordersMap.values());
     const allOrderIds = Array.from(ordersMap.keys());
+
+    const allOrdersVerifiedPaid =
+      allOrders.length > 0 &&
+      allOrders.every((ord) => isOrderFullyPaid(ord)) &&
+      !shipments.some((s) => s.status === 'WAITING_VERIFICATION');
+
+    const allWereAlreadyPacked =
+      allOrdersVerifiedPaid &&
+      shipments.every((s) => s.status === 'PACKED' || Boolean(s.packed_at));
+
+    const mergedStatus = !allOrdersVerifiedPaid
+      ? 'WAITING_VERIFICATION'
+      : allWereAlreadyPacked
+        ? 'PACKED'
+        : 'WAITING_PACKING';
 
     // Sum shipping costs
     const totalShippingCost = shipments.reduce(
@@ -566,6 +622,8 @@ export class ShipmentsService {
       const updated = await tx.shipment.update({
         where: { id: primary.id },
         data: {
+          status: mergedStatus as any,
+          packed_at: allWereAlreadyPacked ? primary.packed_at || new Date() : null,
           address: finalAddress,
           courier: finalCourier,
           service_type: finalServiceType,
@@ -578,7 +636,22 @@ export class ShipmentsService {
           order: {
             include: {
               items: { include: { product: true } },
-              invoice_links: { include: { invoice: true } },
+              payments: {
+                where: { deleted_at: null },
+                orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+              },
+              invoice_links: {
+                include: {
+                  invoice: {
+                    include: {
+                      payments: {
+                        where: { deleted_at: null },
+                        orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                      },
+                    },
+                  },
+                },
+              },
             },
           },
           shipment_orders: {
@@ -586,7 +659,22 @@ export class ShipmentsService {
               order: {
                 include: {
                   items: { include: { product: true } },
-                  invoice_links: { include: { invoice: true } },
+                  payments: {
+                    where: { deleted_at: null },
+                    orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                  },
+                  invoice_links: {
+                    include: {
+                      invoice: {
+                        include: {
+                          payments: {
+                            where: { deleted_at: null },
+                            orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                          },
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -642,6 +730,14 @@ export class ShipmentsService {
     if (allOrders.length <= 1) {
       throw new BadRequestException(
         'Pengiriman ini hanya memiliki 1 pesanan, tidak dapat dipisahkan per pesanan.'
+      );
+    }
+
+    const hasUnpaidOrder = allOrders.some((ord) => !isOrderFullyPaid(ord));
+    if (shipment.status === 'WAITING_VERIFICATION' || hasUnpaidOrder) {
+      throw new BadRequestException(
+        'Pesanan belum lunas (Full Payment) atau pembayaran belum diverifikasi. ' +
+          'Pemisahan pengiriman (Split Shipment) tidak dapat dilakukan sebelum pembayaran lunas dan terverifikasi.'
       );
     }
 
@@ -736,7 +832,22 @@ export class ShipmentsService {
           order: {
             include: {
               items: { include: { product: true } },
-              invoice_links: { include: { invoice: true } },
+              payments: {
+                where: { deleted_at: null },
+                orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+              },
+              invoice_links: {
+                include: {
+                  invoice: {
+                    include: {
+                      payments: {
+                        where: { deleted_at: null },
+                        orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                      },
+                    },
+                  },
+                },
+              },
             },
           },
           shipment_orders: {
@@ -744,7 +855,22 @@ export class ShipmentsService {
               order: {
                 include: {
                   items: { include: { product: true } },
-                  invoice_links: { include: { invoice: true } },
+                  payments: {
+                    where: { deleted_at: null },
+                    orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                  },
+                  invoice_links: {
+                    include: {
+                      invoice: {
+                        include: {
+                          payments: {
+                            where: { deleted_at: null },
+                            orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                          },
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -868,7 +994,22 @@ export class ShipmentsService {
           order: {
             include: {
               items: { include: { product: true } },
-              invoice_links: { include: { invoice: true } },
+              payments: {
+                where: { deleted_at: null },
+                orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+              },
+              invoice_links: {
+                include: {
+                  invoice: {
+                    include: {
+                      payments: {
+                        where: { deleted_at: null },
+                        orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                      },
+                    },
+                  },
+                },
+              },
             },
           },
           shipment_orders: {
@@ -876,7 +1017,22 @@ export class ShipmentsService {
               order: {
                 include: {
                   items: { include: { product: true } },
-                  invoice_links: { include: { invoice: true } },
+                  payments: {
+                    where: { deleted_at: null },
+                    orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                  },
+                  invoice_links: {
+                    include: {
+                      invoice: {
+                        include: {
+                          payments: {
+                            where: { deleted_at: null },
+                            orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+                          },
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -894,6 +1050,113 @@ export class ShipmentsService {
     }
 
     return result;
+  }
+
+  async verifyPayment(
+    id: number,
+    body?: { payment_id?: number; action?: 'VERIFY' | 'REJECT' },
+    user_id?: number
+  ) {
+    const shipment = await this.findOne(id);
+    const ordersMap = new Map<number, any>();
+    if (shipment.order) ordersMap.set(shipment.order.id, shipment.order);
+    for (const so of shipment.shipment_orders || []) {
+      if (so.order) ordersMap.set(so.order.id, so.order);
+    }
+    const allOrders = Array.from(ordersMap.values());
+    const orderIds = allOrders.map((o) => o.id);
+
+    const invoiceIdsSet = new Set<number>();
+    for (const ord of allOrders) {
+      for (const link of ord.invoice_links || []) {
+        if (link.invoice_id) invoiceIdsSet.add(link.invoice_id);
+        else if (link.invoice?.id) invoiceIdsSet.add(link.invoice.id);
+      }
+    }
+    const invoiceIds = Array.from(invoiceIdsSet);
+
+    const action = body?.action === 'REJECT' ? 'REJECT' : 'VERIFY';
+    const specificPaymentId = body?.payment_id ? Number(body.payment_id) : null;
+
+    const pendingWhere: any = specificPaymentId
+      ? { id: specificPaymentId, deleted_at: null, status: 'PENDING' }
+      : {
+          deleted_at: null,
+          status: 'PENDING',
+          OR: [
+            ...(invoiceIds.length > 0 ? [{ invoice_id: { in: invoiceIds } }] : []),
+            ...(orderIds.length > 0 ? [{ order_id: { in: orderIds } }] : []),
+          ],
+        };
+
+    const pendingPayments =
+      invoiceIds.length > 0 || orderIds.length > 0 || specificPaymentId
+        ? await this.prisma.payment.findMany({ where: pendingWhere })
+        : [];
+
+    if (action === 'REJECT') {
+      if (pendingPayments.length === 0) {
+        throw new BadRequestException('Tidak ada bukti pembayaran berstatus PENDING untuk ditolak.');
+      }
+      await this.prisma.payment.updateMany({
+        where: { id: { in: pendingPayments.map((p) => p.id) } },
+        data: { status: 'REJECTED', verified_by_id: null },
+      });
+      for (const invId of invoiceIds) {
+        await this.invoiceCalcService.refreshInvoicePayment(invId);
+      }
+      for (const ordId of orderIds) {
+        if (invoiceIds.length === 0) {
+          await this.invoiceCalcService.refreshOrderPayment(ordId);
+        }
+      }
+      return this.findOne(id);
+    }
+
+    if (pendingPayments.length > 0) {
+      await this.prisma.payment.updateMany({
+        where: { id: { in: pendingPayments.map((p) => p.id) } },
+        data: { status: 'VERIFIED', verified_by_id: user_id || null },
+      });
+    }
+
+    for (const invId of invoiceIds) {
+      await this.invoiceCalcService.refreshInvoicePayment(invId);
+    }
+    for (const ordId of orderIds) {
+      const hasInv = allOrders
+        .find((o) => o.id === ordId)
+        ?.invoice_links?.some((l: any) => l.invoice_id || l.invoice?.id);
+      if (!hasInv) {
+        await this.invoiceCalcService.refreshOrderPayment(ordId);
+      }
+    }
+
+    const refreshed = await this.findOne(id);
+    const refreshedOrdersMap = new Map<number, any>();
+    if (refreshed.order) refreshedOrdersMap.set(refreshed.order.id, refreshed.order);
+    for (const so of refreshed.shipment_orders || []) {
+      if (so.order) refreshedOrdersMap.set(so.order.id, so.order);
+    }
+    const refreshedOrders = Array.from(refreshedOrdersMap.values());
+    const allVerifiedFullPaid =
+      refreshedOrders.length > 0 && refreshedOrders.every((ord) => isOrderFullyPaid(ord));
+
+    if (!allVerifiedFullPaid) {
+      throw new BadRequestException(
+        'Tagihan invoice/pesanan ini masih belum lunas penuh (Not Full Payment). ' +
+          'Pengiriman belum dapat dilanjutkan ke tahap Packing sebelum seluruh pembayaran lunas dan diverifikasi.'
+      );
+    }
+
+    if (refreshed.status === 'WAITING_VERIFICATION') {
+      await this.prisma.shipment.update({
+        where: { id },
+        data: { status: 'WAITING_PACKING' as any },
+      });
+    }
+
+    return this.findOne(id);
   }
 
   async ensureShipmentForOrder(order_id: number) {

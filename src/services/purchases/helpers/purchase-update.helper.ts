@@ -141,10 +141,21 @@ export async function updateConsolidatedPurchaseHelper(
     }
   }
 
+  const hasBatchSorting = nextSortingLines.length > 0;
+
   for (const row of rows) {
     const itInput = (row.order_item_id ? itemMap.get(row.order_item_id) : undefined) || itemMap.get(row.id);
-    const isRejected = Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE');
-    const isBought = Boolean(itInput?.is_bought ?? !isRejected);
+    const explicitDecision = itInput?.decision ? String(itInput.decision).toUpperCase() : undefined;
+    const isRejected =
+      explicitDecision === 'REJECTED' ||
+      (explicitDecision === undefined &&
+        Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE'));
+    const isBought =
+      explicitDecision === 'BOUGHT' ||
+      (explicitDecision === undefined &&
+        itInput?.is_bought !== undefined
+        ? Boolean(itInput.is_bought)
+        : explicitDecision === undefined && !isRejected && itInput?.status === 'PURCHASED');
     const rawKeptUntil = itInput?.kept_until !== undefined ? itInput.kept_until : itInput?.keptUntil;
     const keptUntilData = rawKeptUntil !== undefined ? (rawKeptUntil ? new Date(rawKeptUntil) : null) : undefined;
     const rawVariation = itInput?.variation !== undefined ? itInput.variation : itInput?.variant;
@@ -184,10 +195,19 @@ export async function updateConsolidatedPurchaseHelper(
     if (nextVariation !== undefined) specUpdateData.variation = nextVariation;
     if (nextSize !== undefined) specUpdateData.size = nextSize;
 
-    // Handle manual Live Shopping purchase (no order_item_id)
+    // Handle manual purchase (no order_item_id)
     if (!row.order_item_id || !row.order_item) {
-      const targetStatus = isRejected || allocatedQty <= 0 ? 'UNAVAILABLE' : isBought ? 'PURCHASED' : (itInput?.status === 'SORTING' ? 'SORTING' : 'WAITING_PURCHASE');
-      const nextQty = Math.max(0, allocatedQty);
+      const targetStatus =
+        isRejected || (isBought && allocatedQty <= 0)
+          ? 'UNAVAILABLE'
+          : isBought
+            ? 'PURCHASED'
+            : itInput?.status === 'SORTING' || hasBatchSorting || row.status === 'SORTING'
+              ? 'SORTING'
+              : row.status === 'PURCHASED'
+                ? 'PURCHASED'
+                : 'WAITING_PURCHASE';
+      const nextQty = Math.max(0, allocatedQty || row.quantity);
       const nextActual = targetStatus === 'UNAVAILABLE' ? 0 : unitPrice * (nextQty || row.quantity);
       const est = Number(row.estimated_price);
 
@@ -203,7 +223,7 @@ export async function updateConsolidatedPurchaseHelper(
         },
       });
 
-      if (stockService && row.product_id && row.period?.type === 'LIVE_SHOPPING') {
+      if (stockService && row.product_id) {
         const oldEffectiveQty = row.status === 'PURCHASED' ? Number(row.quantity || 0) : 0;
         const newEffectiveQty = targetStatus === 'PURCHASED' ? (nextQty || Number(row.quantity || 0)) : 0;
         const delta = newEffectiveQty - oldEffectiveQty;
@@ -214,7 +234,7 @@ export async function updateConsolidatedPurchaseHelper(
             delta,
             userId,
             String(row.id),
-            'Penyesuaian stok dari pembaruan pembelian Live Shopping.'
+            'Penyesuaian stok dari pembaruan pembelian event.'
           );
         }
       }
@@ -224,8 +244,8 @@ export async function updateConsolidatedPurchaseHelper(
     const order = row.order_item.order;
     const fromStatus = row.order_item.fulfillment_status;
 
-    // Case 1: Completely Rejected / 0 allocated
-    if (isRejected || allocatedQty <= 0) {
+    // Case 1: Completely Rejected
+    if (isRejected || (isBought && allocatedQty <= 0)) {
       await prisma.purchase.update({
         where: { id: row.id },
         data: {
@@ -237,10 +257,13 @@ export async function updateConsolidatedPurchaseHelper(
         },
       });
 
-      if (Object.keys(specUpdateData).length > 0) {
+      if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
         await prisma.order_item.update({
           where: { id: row.order_item_id },
-          data: specUpdateData,
+          data: {
+            ...specUpdateData,
+            ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+          },
         });
       }
 
@@ -255,12 +278,11 @@ export async function updateConsolidatedPurchaseHelper(
       continue;
     }
 
-    // Case 2: Partial Allocation (Shortage)
-    if (allocatedQty < row.quantity) {
+    // Case 2: Partial Allocation (Shortage) when marked Bought
+    if (isBought && allocatedQty > 0 && allocatedQty < row.quantity) {
       const boughtActual = unitPrice * allocatedQty;
       const boughtEst = (Number(row.estimated_price) * allocatedQty) / row.quantity;
 
-      // Update primary purchase and order_item for the bought quantity
       await prisma.purchase.update({
         where: { id: row.id },
         data: {
@@ -293,11 +315,11 @@ export async function updateConsolidatedPurchaseHelper(
       continue;
     }
 
-    // Case 3: Fully bought, waiting purchase, or sorting
-    const rowStatus = itInput?.status === 'SORTING'
-      ? 'SORTING'
-      : isBought
-        ? 'PURCHASED'
+    // Case 3: Fully bought (Sorted), or still IDLE (Waiting For Purchase / Purchased after Sorting)
+    const rowStatus = isBought
+      ? 'PURCHASED'
+      : itInput?.status === 'SORTING' || hasBatchSorting || row.status === 'SORTING'
+        ? 'SORTING'
         : 'WAITING_PURCHASE';
     const rowActual = unitPrice * row.quantity;
     const est = Number(row.estimated_price);
@@ -392,7 +414,130 @@ export async function updateConsolidatedPurchaseHelper(
     }
   }
 
+  if (stockService && purchaseNumber) {
+    await syncPurchaseSpareStockHelper(prisma, stockService, purchaseNumber, userId);
+  }
+
   return rows.length > 0 ? rows[0].id : null;
+}
+
+export async function syncPurchaseSpareStockHelper(
+  prisma: PrismaService,
+  stockService: StockService,
+  purchaseNumber: string,
+  userId?: number
+) {
+  if (!purchaseNumber) return;
+
+  const batchRows = await prisma.purchase.findMany({
+    where: { purchase_number: purchaseNumber },
+    include: {
+      product: true,
+      period: true,
+      order_item: {
+        include: { product: true },
+      },
+    },
+  });
+
+  if (batchRows.length === 0) return;
+
+  const sortingLines = batchRows.reduce<any[]>((acc, r) => {
+    if (acc.length > 0) return acc;
+    return extractSortingFromNotes(r.notes).sortingLines;
+  }, []);
+
+  if (sortingLines.length === 0) return;
+
+  // Map productId -> { sortingActualQty, manualRowQty, customerAllocatedQty, productName }
+  const productMap = new Map<
+    number,
+    {
+      sortingActualQty: number;
+      manualRowQty: number;
+      customerAllocatedQty: number;
+      productName: string;
+    }
+  >();
+
+  const nameToProductId = new Map<string, number>();
+  for (const r of batchRows) {
+    const pid = r.product_id || r.order_item?.product_id || null;
+    const pname =
+      r.product?.name ||
+      r.order_item?.product?.name ||
+      r.order_item?.manual_product_name ||
+      '';
+    if (pid) {
+      if (pname) nameToProductId.set(pname.trim().toLowerCase(), pid);
+      if (!productMap.has(pid)) {
+        productMap.set(pid, {
+          sortingActualQty: 0,
+          manualRowQty: 0,
+          customerAllocatedQty: 0,
+          productName: pname || `Product #${pid}`,
+        });
+      }
+      const entry = productMap.get(pid)!;
+      if (!r.order_item_id) {
+        if (r.status === 'PURCHASED') {
+          entry.manualRowQty += Math.max(0, Number(r.quantity || 0));
+        }
+      } else if (r.status !== 'UNAVAILABLE') {
+        entry.customerAllocatedQty += Math.max(0, Number(r.quantity || 0));
+      }
+    }
+  }
+
+  for (const line of sortingLines) {
+    let pid = Number(line.productId || line.product_id || 0) || null;
+    if (!pid && line.productName) {
+      pid = nameToProductId.get(String(line.productName).trim().toLowerCase()) || null;
+    }
+    if (!pid) continue;
+    if (!productMap.has(pid)) {
+      productMap.set(pid, {
+        sortingActualQty: 0,
+        manualRowQty: 0,
+        customerAllocatedQty: 0,
+        productName: String(line.productName || `Product #${pid}`),
+      });
+    }
+    const entry = productMap.get(pid)!;
+    entry.sortingActualQty += Math.max(0, Number(line.actualQty || 0));
+  }
+
+  for (const [productId, stats] of productMap.entries()) {
+    const desiredSpareStock = Math.max(
+      0,
+      stats.sortingActualQty - stats.manualRowQty - stats.customerAllocatedQty
+    );
+    const refId = `${purchaseNumber}:${productId}`;
+    const spareMovements = await prisma.inventory_movement.findMany({
+      where: {
+        product_id: productId,
+        reference_type: 'PURCHASE_SPARE',
+        reference_id: refId,
+      },
+      select: { quantity: true },
+    });
+    const alreadyAddedSpare = spareMovements.reduce(
+      (sum, m) => sum + Number(m.quantity || 0),
+      0
+    );
+    const delta = desiredSpareStock - alreadyAddedSpare;
+    if (delta !== 0) {
+      await stockService.addStockFromPurchase(
+        prisma,
+        productId,
+        delta,
+        userId,
+        refId,
+        `Stok cadangan (spare ${desiredSpareStock} pcs) dari pembelian ${purchaseNumber}.`,
+        'PURCHASE_SPARE'
+      );
+    }
+  }
 }
 
 export async function syncNewProductSpecsHelper(

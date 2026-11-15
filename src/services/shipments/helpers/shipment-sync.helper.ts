@@ -3,44 +3,45 @@ import { BadRequestException } from '@nestjs/common';
 export function isOrderFullyPaid(order: any): boolean {
   if (!order) return false;
 
-  // 1. Order must not be in initial/unsettled item payment status
-  if (['NEW', 'WAITING_DP', 'DP_RECEIVED', 'CANCELLED'].includes(order.status)) {
+  if (['CANCELLED'].includes(order.status)) {
+    return false;
+  }
+
+  // 1. If the order is linked to any active invoice, every active linked invoice MUST be verified full payment
+  const invoiceLinks = order.invoice_links || order.invoiceLinks;
+  if (Array.isArray(invoiceLinks) && invoiceLinks.length > 0) {
+    const activeInvoices = invoiceLinks
+      .map((link: any) => link?.invoice)
+      .filter((inv: any) => inv && !inv.deleted_at && inv.status !== 'CANCELLED');
+
+    if (activeInvoices.length > 0) {
+      const allInvoicesPaid = activeInvoices.every((inv: any) => {
+        const invOutstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
+        const invTotal = Number(inv.total_bill ?? inv.totalBill ?? 0);
+        const invPaid =
+          Number(inv.paid_amount ?? inv.paidAmount ?? 0) +
+          Number(inv.deposit_amount ?? inv.depositAmount ?? 0);
+        return (
+          ['PAID', 'OVERPAID', 'REFUND_DUE'].includes(inv.status) &&
+          invOutstanding <= 0 &&
+          (invTotal <= 0 || invPaid >= invTotal)
+        );
+      });
+      return allInvoicesPaid;
+    }
+  }
+
+  // 2. Standalone order (not linked to an active invoice)
+  if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
     return false;
   }
 
   const totalBill = Number(order.total_bill ?? order.totalBill ?? 0);
   const paidAmount = Number(order.paid_amount ?? order.paidAmount ?? 0);
   const outstanding = Number(order.outstanding_amount ?? order.outstandingAmount ?? 0);
-  const customerShipping = Number(order.customer_shipping ?? order.customerShipping ?? 0);
-  const nonShippingBill = Math.max(0, totalBill - customerShipping);
 
-  // 2. If the order itself has 0 outstanding and its bill is covered, it is fully paid
-  // (even if a sibling order on the same invoice has an ongkir settlement balance)
   if (outstanding <= 0 && (totalBill <= 0 || paidAmount >= totalBill)) {
     return true;
-  }
-
-  // 3. If the order is in shipment stage and its non-shipping (item + service fee) bill is fully paid,
-  // any remaining outstanding amount is strictly shipping / ongkir settlement, which should not block
-  // packing or inputting resi.
-  if (
-    ['READY_TO_SHIP', 'WAITING_SETTLEMENT', 'SHIPPED', 'COMPLETED'].includes(order.status) &&
-    paidAmount > 0 &&
-    paidAmount >= nonShippingBill
-  ) {
-    return true;
-  }
-
-  // 4. Fallback: if order.paid_amount was not synced yet, check if all linked invoices are PAID
-  const invoiceLinks = order.invoice_links || order.invoiceLinks;
-  if (invoiceLinks && invoiceLinks.length > 0) {
-    const allInvoicesPaid = invoiceLinks.every((link: any) => {
-      const inv = link.invoice;
-      if (!inv) return false;
-      const invOutstanding = Number(inv.outstanding_amount ?? inv.outstandingAmount ?? 0);
-      return ['PAID', 'OVERPAID', 'REFUND_DUE'].includes(inv.status) && invOutstanding <= 0;
-    });
-    if (allInvoicesPaid) return true;
   }
 
   return false;
@@ -54,14 +55,14 @@ export function validateShipmentPaymentPreconditions(
   if (order && !isOrderFullyPaid(order)) {
     if (['PACKED', 'READY'].includes(status)) {
       throw new BadRequestException(
-        'Pesanan belum lunas (Full Payment). ' +
-          'Proses packing tidak dapat dilakukan sebelum pembayaran lunas.'
+        'Pesanan belum lunas (Full Payment) atau pembayaran belum diverifikasi. ' +
+          'Proses packing tidak dapat dilakukan sebelum pembayaran lunas dan terverifikasi.'
       );
     }
     if (trackingNumber || ['IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(status)) {
       throw new BadRequestException(
-        'Pesanan belum lunas (Full Payment). ' +
-          'Nomor resi dan pengiriman tidak dapat diproses sebelum pembayaran lunas.'
+        'Pesanan belum lunas (Full Payment) atau pembayaran belum diverifikasi. ' +
+          'Nomor resi dan pengiriman tidak dapat diproses sebelum pembayaran lunas dan terverifikasi.'
       );
     }
   }
@@ -84,6 +85,20 @@ export function validateShipmentTransition(targetStatus: string, current: any, b
     (body.trackingNumber !== undefined &&
       body.trackingNumber !== null &&
       String(body.trackingNumber).trim() !== '');
+
+  if (current.status === 'WAITING_VERIFICATION') {
+    if (['PACKED', 'READY', 'IN_TRANSIT', 'HANDED_TO_COURIER', 'DELIVERED'].includes(targetStatus)) {
+      throw new BadRequestException(
+        'Pembayaran penuh (Full Payment) pada pengiriman ini belum diverifikasi. ' +
+          'Silakan verifikasi pembayaran terlebih dahulu sebelum melanjutkan ke proses packing.'
+      );
+    }
+    if (isResiProvided && !isShopee) {
+      throw new BadRequestException(
+        'Nomor resi tidak dapat diinput sebelum pembayaran diverifikasi dan pesanan selesai dipacking.'
+      );
+    }
+  }
 
   if (current.status === 'WAITING_PACKING') {
     if (isResiProvided && !isShopee) {

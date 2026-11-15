@@ -79,6 +79,7 @@ export class InvoicesService {
       where: {
         customer_id: customerId,
         deleted_at: null,
+        status: { not: 'CANCELLED' },
       },
       include: {
         orders: {
@@ -86,6 +87,11 @@ export class InvoicesService {
             order: {
               include: {
                 shipments: true,
+                shipment_orders: {
+                  include: {
+                    shipment: true,
+                  },
+                },
                 items: true,
               },
             },
@@ -107,10 +113,25 @@ export class InvoicesService {
         const order = link.order;
         if (!order) continue;
 
-        // Check if shipment is packed or beyond
-        if (order.shipments && order.shipments.length > 0) {
-          for (const s of order.shipments) {
-            if (['PACKED', 'READY', 'HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(s.status) || s.packed_at) {
+        const allOrderShipments = [
+          ...(order.shipments || []),
+          ...(order.shipment_orders || []).map((so: any) => so.shipment).filter(Boolean),
+        ];
+
+        // Check if any shipment from this invoice is packed or beyond
+        if (allOrderShipments.length > 0) {
+          for (const s of allOrderShipments) {
+            if (
+              [
+                'PACKED',
+                'READY',
+                'WAITING_SETTLEMENT',
+                'HANDED_TO_COURIER',
+                'IN_TRANSIT',
+                'DELIVERED',
+              ].includes(s.status) ||
+              Boolean(s.packed_at)
+            ) {
               isPackedOrBeyond = true;
               break;
             }
@@ -369,11 +390,14 @@ export class InvoicesService {
         const eligibleInvoices = await this.getUnpackedInvoiceOptions(customerId);
         if (requestedInvId) {
           targetExistingInvoice = eligibleInvoices.find((inv) => inv.id === requestedInvId);
+          if (!targetExistingInvoice) {
+            throw new BadRequestException(
+              'Tidak dapat menambahkan pesanan baru ke invoice yang dipilih karena pengiriman dari invoice tersebut sudah dipacking (atau memiliki barang titip simpan). Silakan buat invoice terpisah.'
+            );
+          }
         } else if (useExistingInvoice && eligibleInvoices.length > 0) {
           targetExistingInvoice = eligibleInvoices[0];
         }
-        // Note: If previous order is on keep, eligibleInvoices will be empty for that invoice,
-        // so targetExistingInvoice remains null and a new invoice is created as required!
       }
 
       if (targetExistingInvoice) {
@@ -487,15 +511,33 @@ export class InvoicesService {
     const hasOrderChange = body.order_ids !== undefined || body.orderIds !== undefined || body.customer_id !== undefined || body.customerId !== undefined;
 
     if (hasOrderChange) {
-      // Check if invoice or any order is already packed
-      const invoiceShipments = await this.prisma.shipment.findMany({
-        where: { order_id: { in: current.orders.map((o) => o.order_id) } },
-      });
-      const isPacked = invoiceShipments.some((s) =>
-        ['PACKED', 'READY', 'HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(s.status) || Boolean(s.packed_at)
-      );
-      if (isPacked) {
-        throw new BadRequestException('Pesanan tidak dapat diubah atau ditambahkan karena invoice / pesanan sudah dalam proses packing atau pengiriman.');
+      // Check if invoice or any order in this invoice has a shipment that is already packed
+      const existingOrderIds = current.orders.map((o) => o.order_id);
+      if (existingOrderIds.length > 0) {
+        const invoiceShipments = await this.prisma.shipment.findMany({
+          where: {
+            OR: [
+              { order_id: { in: existingOrderIds } },
+              { shipment_orders: { some: { order_id: { in: existingOrderIds } } } },
+            ],
+          },
+        });
+        const isPacked = invoiceShipments.some(
+          (s) =>
+            [
+              'PACKED',
+              'READY',
+              'WAITING_SETTLEMENT',
+              'HANDED_TO_COURIER',
+              'IN_TRANSIT',
+              'DELIVERED',
+            ].includes(s.status) || Boolean(s.packed_at)
+        );
+        if (isPacked) {
+          throw new BadRequestException(
+            'Pesanan tidak dapat diubah atau ditambahkan karena pengiriman pada invoice ini sudah dipacking. Silakan buat pesanan baru dengan invoice terpisah (pengiriman tetap dapat digabung melalui menu Shipment).'
+          );
+        }
       }
 
       // Customer change is never allowed once transactions exist

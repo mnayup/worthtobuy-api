@@ -2,6 +2,7 @@ import { Injectable, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma/prisma.service';
 import { StockService } from '../shared/stock.service';
 import { sequence } from '../../common/utils/http.utils';
+import { extractSortingFromNotes } from '../purchases/helpers/purchase-consolidation.helper';
 
 @Injectable()
 export class ProductsService {
@@ -70,8 +71,17 @@ export class ProductsService {
         include: {
           period: { select: { id: true, name: true, code: true, type: true } },
           purchases: {
-            where: { status: 'PURCHASED', order_item_id: null },
-            select: { variation: true, size: true, quantity: true },
+            where: { status: { in: ['SORTING', 'PURCHASED'] } },
+            select: {
+              id: true,
+              purchase_number: true,
+              order_item_id: true,
+              status: true,
+              variation: true,
+              size: true,
+              quantity: true,
+              notes: true,
+            },
           },
           order_items: {
             where: {
@@ -98,7 +108,7 @@ export class ProductsService {
         0,
         Number(row.stock_quantity || 0) - Number(row.reserved_quantity || 0)
       );
-      const manualPurchases = Array.isArray(row.purchases) ? row.purchases : [];
+      const allPurchases = Array.isArray(row.purchases) ? row.purchases : [];
       const activeOrderItems = Array.isArray(row.order_items) ? row.order_items : [];
 
       let availableVariantStocks: Array<{
@@ -107,31 +117,70 @@ export class ProductsService {
         available: number;
       }> = [];
 
-      if (manualPurchases.length > 0) {
-        const stockMap = new Map<
-          string,
-          { variant: string; size: string; purchased: number; ordered: number }
-        >();
+      const stockMap = new Map<
+        string,
+        { variant: string; size: string; purchased: number; ordered: number }
+      >();
 
-        for (const p of manualPurchases) {
-          const v = String(p.variation || '').trim();
-          const s = String(p.size || '').trim();
-          const key = `${v.toLowerCase()}___${s.toLowerCase()}`;
-          if (!stockMap.has(key)) {
-            stockMap.set(key, { variant: v, size: s, purchased: 0, ordered: 0 });
-          }
-          stockMap.get(key)!.purchased += Math.max(0, Number(p.quantity || 0));
+      const addPurchasedEntry = (vRaw: any, sRaw: any, qtyRaw: any) => {
+        const qty = Math.max(0, Number(qtyRaw || 0));
+        if (qty <= 0) return;
+        const v = String(vRaw || '').trim();
+        const s = String(sRaw || '').trim();
+        const normV = v.toLowerCase() === 'default' || v === '-' ? '' : v;
+        const normS = s === '-' ? '' : s;
+        const key = `${normV.toLowerCase()}___${normS.toLowerCase()}`;
+        if (!stockMap.has(key)) {
+          stockMap.set(key, { variant: normV, size: normS, purchased: 0, ordered: 0 });
         }
+        stockMap.get(key)!.purchased += qty;
+      };
 
+      // 1) Check sortingLines per unique purchase_number
+      const seenSortingBatches = new Set<string>();
+      const batchesWithSorting = new Set<string>();
+      for (const p of allPurchases) {
+        const pNum = p.purchase_number || `ROW_${p.id}`;
+        if (seenSortingBatches.has(pNum)) continue;
+        const { sortingLines } = extractSortingFromNotes(p.notes);
+        if (sortingLines.length > 0) {
+          seenSortingBatches.add(pNum);
+          const matchingLines = sortingLines.filter(
+            (l: any) =>
+              Number(l.productId || l.product_id || 0) === row.id ||
+              (!l.productId &&
+                !l.product_id &&
+                String(l.productName || '').trim().toLowerCase() ===
+                  String(row.name || '').trim().toLowerCase())
+          );
+          if (matchingLines.length > 0) {
+            batchesWithSorting.add(pNum);
+            for (const l of matchingLines) {
+              addPurchasedEntry(l.variant || l.variation, l.size, l.actualQty);
+            }
+          }
+        }
+      }
+
+      // 2) Manual purchases (order_item_id === null) from batches not already counted via sortingLines
+      for (const p of allPurchases) {
+        const pNum = p.purchase_number || `ROW_${p.id}`;
+        if (!p.order_item_id && p.status === 'PURCHASED' && !batchesWithSorting.has(pNum)) {
+          addPurchasedEntry(p.variation, p.size, p.quantity);
+        }
+      }
+
+      if (stockMap.size > 0 && totalAvail > 0) {
         for (const oi of activeOrderItems) {
-          const v = String(oi.variation || '').trim();
-          const s = String(oi.size || '').trim();
+          const vRaw = String(oi.variation || '').trim();
+          const sRaw = String(oi.size || '').trim();
+          const v = vRaw.toLowerCase() === 'default' || vRaw === '-' ? '' : vRaw;
+          const s = sRaw === '-' ? '' : sRaw;
           const exactKey = `${v.toLowerCase()}___${s.toLowerCase()}`;
           const qty = Math.max(0, Number(oi.quantity || 0));
           if (stockMap.has(exactKey)) {
             stockMap.get(exactKey)!.ordered += qty;
           } else {
-            // Fallback match if variant or size matches a single bucket
             const fallbackEntry = Array.from(stockMap.values()).find(
               (entry) =>
                 (entry.variant.toLowerCase() === v.toLowerCase() || !entry.variant || !v) &&
@@ -153,7 +202,9 @@ export class ProductsService {
             ),
           }))
           .filter((entry) => entry.available > 0);
-      } else if (totalAvail > 0) {
+      }
+
+      if (availableVariantStocks.length === 0 && totalAvail > 0) {
         const variants = parseTags(row.variant);
         const sizes = parseTags(row.size);
         const vList = variants.length > 0 ? variants : [''];

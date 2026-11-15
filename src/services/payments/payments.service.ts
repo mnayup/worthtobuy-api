@@ -200,9 +200,7 @@ export class PaymentsService {
       include: { order: { include: { customer: true } }, invoice: { include: { customer: true } } },
     });
 
-    if (data.status === 'VERIFIED') {
-      await this.invoiceCalcService.refreshPaymentTarget(data);
-    }
+    await this.invoiceCalcService.refreshPaymentTarget(data);
 
     const customerName = data.invoice?.customer.full_name || data.order?.customer.full_name || '-';
     await this.prisma.notification.create({

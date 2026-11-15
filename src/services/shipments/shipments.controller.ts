@@ -41,6 +41,14 @@ export class ShipmentsController {
     return data;
   }
 
+  @Post(':id/verify-payment')
+  @Roles("OWNER", "ADMIN")
+  async verifyPayment(@Param('id') id: string, @Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {
+    const data = await this.shipmentsService.verifyPayment(Number(id), body, userId);
+    await auditLog(this.prisma, userId, "VERIFY_PAYMENT", "Shipment", String(id), body, req.ip);
+    return data;
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.shipmentsService.findOne(Number(id));

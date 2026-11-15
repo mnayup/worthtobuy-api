@@ -1,5 +1,6 @@
 import { PrismaService } from '../../../config/prisma/prisma.service';
 import { sequence } from '../../../common/utils/http.utils';
+import { isOrderFullyPaid } from '../../shipments/helpers/shipment-sync.helper';
 
 export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order_id: number) {
   const order = await prisma.order.findUnique({
@@ -16,14 +17,14 @@ export async function ensurePurchasesForOrderHelper(prisma: PrismaService, order
   });
   if (!order || !order.items || order.items.length === 0) return;
 
-  const isLiveOrReadyPeriod =
-    order.period?.type === 'LIVE_SHOPPING' || order.period?.code === 'READY-STOCK';
+  const isReadyStockPeriod = order.period?.code === 'READY-STOCK';
 
   for (const item of order.items) {
-    // Ready stock and Live Shopping items do not need to be purchased from orders
+    // Items fulfilled from product stock (or Ready Stock period) do NOT get inserted into purchases again
     if (
-      isLiveOrReadyPeriod ||
+      isReadyStockPeriod ||
       item.source_type === 'READY_STOCK' ||
+      item.purchase_status === 'PURCHASED' ||
       item.product?.stock_mode === 'READY_STOCK'
     ) {
       if (item.fulfillment_status === 'PENDING') {
@@ -152,12 +153,36 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       customer: true,
       period: true,
       shipments: true,
-      shipment_orders: true,
+      shipment_orders: {
+        include: {
+          shipment: true,
+        },
+      },
+      payments: {
+        where: {
+          deleted_at: null,
+          status: { in: ['VERIFIED', 'PENDING'] },
+        },
+      },
       invoice_links: {
         include: {
           invoice: {
             include: {
-              orders: true,
+              orders: {
+                include: {
+                  order: {
+                    include: {
+                      items: true,
+                    },
+                  },
+                },
+              },
+              payments: {
+                where: {
+                  deleted_at: null,
+                  status: { in: ['VERIFIED', 'PENDING'] },
+                },
+              },
             },
           },
         },
@@ -169,15 +194,101 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       },
     },
   });
-  if (!order) return;
+  if (!order || order.status === 'CANCELLED') return;
 
   const activeItems = (order.items || []).filter(
     (i) => i.fulfillment_status !== 'UNAVAILABLE'
   );
+  if (activeItems.length === 0) return;
+
   const allKept =
     activeItems.length > 0 &&
-    activeItems.every((i) => i.fulfillment_status === 'KEPT');
+    activeItems.every((i) => i.fulfillment_status === 'KEPT' || Boolean(i.kept_until));
   if (allKept) return;
+
+  const activeInvoiceLink = (order.invoice_links || []).find(
+    (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+  );
+  const linkedInvoice: any = activeInvoiceLink?.invoice;
+
+  const isOrderUnavailable = (ord: any) =>
+    !ord ||
+    ord.status === 'UNAVAILABLE' ||
+    (Array.isArray(ord.items) &&
+      ord.items.length > 0 &&
+      ord.items.every((it: any) => it.fulfillment_status === 'UNAVAILABLE'));
+
+  let isVerifiedFullPaid = false;
+  let isUploadedFullPaid = false;
+
+  if (linkedInvoice) {
+    const invTotalBill =
+      Array.isArray(linkedInvoice.orders) && linkedInvoice.orders.length > 0
+        ? linkedInvoice.orders.reduce((sum: number, link: any) => {
+            if (isOrderUnavailable(link.order)) return sum;
+            return sum + Number(link.order?.total_bill ?? link.snapshot_amount ?? 0);
+          }, 0)
+        : Number(linkedInvoice.total_bill || 0);
+    const invVerifiedPaid =
+      Number(linkedInvoice.paid_amount || 0) + Number(linkedInvoice.deposit_amount || 0);
+    const invPendingPaid = (linkedInvoice.payments || [])
+      .filter((p: any) => p.status === 'PENDING')
+      .reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+
+    isVerifiedFullPaid =
+      ['PAID', 'OVERPAID', 'REFUND_DUE'].includes(linkedInvoice.status) &&
+      Number(linkedInvoice.outstanding_amount || 0) <= 0 &&
+      (invTotalBill <= 0 || invVerifiedPaid >= invTotalBill);
+    isUploadedFullPaid =
+      !isVerifiedFullPaid &&
+      invTotalBill > 0 &&
+      invVerifiedPaid + invPendingPaid >= invTotalBill;
+  } else {
+    const ordTotalBill = Number(order.total_bill || 0);
+    const ordVerifiedPaid = Number(order.paid_amount || 0);
+    const ordPendingPaid = (order.payments || [])
+      .filter((p: any) => p.status === 'PENDING')
+      .reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+
+    isVerifiedFullPaid =
+      Number(order.outstanding_amount || 0) <= 0 &&
+      (ordTotalBill <= 0 || ordVerifiedPaid >= ordTotalBill);
+    isUploadedFullPaid =
+      !isVerifiedFullPaid &&
+      ordTotalBill > 0 &&
+      ordVerifiedPaid + ordPendingPaid >= ordTotalBill;
+  }
+
+  const siblingOrderIds = (order.invoice_links || [])
+    .flatMap((link) => link.invoice?.orders.map((o: any) => o.order_id) || [])
+    .filter((id) => id !== order.id);
+
+  // Check if sibling orders in the same invoice already have an unpacked shipment
+  let candidateShipment: any = null;
+  if (siblingOrderIds.length > 0) {
+    candidateShipment = await prisma.shipment.findFirst({
+      where: {
+        status: { in: ['WAITING_VERIFICATION', 'WAITING_PACKING'] as any },
+        packed_at: null,
+        OR: [
+          { order_id: { in: siblingOrderIds } },
+          { shipment_orders: { some: { order_id: { in: siblingOrderIds } } } },
+        ],
+      },
+      include: {
+        shipment_orders: {
+          include: {
+            order: {
+              include: {
+                items: { include: { product: true } },
+                invoice_links: { include: { invoice: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
 
   const isLiveOrReadyStock =
     order.period?.type === 'LIVE_SHOPPING' ||
@@ -188,18 +299,38 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       ));
   const isPriorityCustomer = order.customer?.segment === 'PRIORITY';
   const hasPaidDp = Number(order.paid_amount || 0) > 0;
-  const isPartial = Number(order.outstanding_amount || 0) > 0;
-
-  if (isLiveOrReadyStock) {
-    // Ready Stock & Live Shopping: VIP goes directly to shipment; Regular goes to shipment once DP/payment is paid
-    if (!isPriorityCustomer && !hasPaidDp && isPartial) return;
-  } else {
-    if (isPartial) return;
-  }
 
   // Check if order already belongs to any shipment
-  if (order.shipments && order.shipments.length > 0) return;
-  if (order.shipment_orders && order.shipment_orders.length > 0) return;
+  const existingShipments = [
+    ...(order.shipments || []),
+    ...(order.shipment_orders || []).map((so: any) => so.shipment).filter(Boolean),
+  ];
+  if (existingShipments.length > 0) {
+    for (const sh of existingShipments) {
+      if (!sh.packed_at && ['WAITING_VERIFICATION', 'WAITING_PACKING'].includes(sh.status)) {
+        const desiredStatus = isVerifiedFullPaid ? 'WAITING_PACKING' : 'WAITING_VERIFICATION';
+        if (sh.status !== desiredStatus) {
+          await prisma.shipment.update({
+            where: { id: sh.id },
+            data: { status: desiredStatus as any },
+          });
+        }
+      }
+    }
+    return;
+  }
+
+  // Only create/bundle into shipment if:
+  // 1) Customer has uploaded or verified Full Payment (isVerifiedFullPaid || isUploadedFullPaid), OR
+  // 2) Sibling order in the SAME invoice already has an unpacked shipment (e.g. customer order menyusul added to this invoice), OR
+  // 3) Live Shopping / Ready Stock with VIP or DP paid
+  const canEnterShipment =
+    isVerifiedFullPaid ||
+    isUploadedFullPaid ||
+    Boolean(candidateShipment) ||
+    (isLiveOrReadyStock && (isPriorityCustomer || hasPaidDp));
+
+  if (!canEnterShipment) return;
 
   const address =
     order.customer?.address && order.customer?.address.trim() !== '-'
@@ -218,63 +349,11 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
           .join(', ')
       : '';
 
-  // Check for candidate existing WAITING_PACKING shipment to bundle into
-  // Priority 1: Same invoice
-  const siblingOrderIds = (order.invoice_links || [])
-    .flatMap((link) => link.invoice?.orders.map((o) => o.order_id) || [])
-    .filter((id) => id !== order.id);
-
-  let candidateShipment: any = null;
-  if (siblingOrderIds.length > 0) {
-    candidateShipment = await prisma.shipment.findFirst({
-      where: {
-        status: 'WAITING_PACKING',
-        packed_at: null,
-        OR: [
-          { order_id: { in: siblingOrderIds } },
-          { shipment_orders: { some: { order_id: { in: siblingOrderIds } } } },
-        ],
-      },
-      include: {
-        shipment_orders: {
-          include: {
-            order: {
-              include: {
-                items: { include: { product: true } },
-              },
-            },
-          },
-        },
-      },
-    });
-  }
-
-  // Priority 2: Same customer
-  if (!candidateShipment && order.customer_id) {
-    candidateShipment = await prisma.shipment.findFirst({
-      where: {
-        customer_id: order.customer_id,
-        status: 'WAITING_PACKING',
-        packed_at: null,
-      },
-      orderBy: { created_at: 'desc' },
-      include: {
-        shipment_orders: {
-          include: {
-            order: {
-              include: {
-                items: { include: { product: true } },
-              },
-            },
-          },
-        },
-      },
-    });
-  }
+  const targetInitialStatus = isVerifiedFullPaid ? 'WAITING_PACKING' : 'WAITING_VERIFICATION';
 
   if (candidateShipment) {
     try {
-      // Attach order to candidate shipment
+      // Attach order to candidate shipment of the same invoice
       await prisma.shipment_order.upsert({
         where: {
           shipment_id_order_id: {
@@ -321,9 +400,16 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
           ? candidateShipment.address
           : address;
 
+      const allOrdersVerifiedPaid =
+        isVerifiedFullPaid && ordersList.every((o: any) => isOrderFullyPaid(o));
+      const nextBundledStatus = allOrdersVerifiedPaid
+        ? 'WAITING_PACKING'
+        : 'WAITING_VERIFICATION';
+
       await prisma.shipment.update({
         where: { id: candidateShipment.id },
         data: {
+          status: nextBundledStatus as any,
           shipping_cost: combinedShippingCost,
           address: candidateAddress,
           notes: fullItemsSummary
@@ -333,12 +419,13 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       });
       return;
     } catch (err) {
-      // Fallback: If bundling fails for any reason, proceed to create a standalone shipment below
-      console.error(`[ensureShipmentForOrderHelper] Failed to bundle order ${order.id} into shipment ${candidateShipment.id}. Creating new shipment fallback.`, err);
+      console.error(
+        `[ensureShipmentForOrderHelper] Failed to bundle order ${order.id} into shipment ${candidateShipment.id}. Creating new shipment fallback.`,
+        err
+      );
     }
   }
 
-  const linkedInvoice: any = order.invoice_links?.[0]?.invoice;
   const effectiveShippingMethod =
     order.shipping_method || linkedInvoice?.shipping_method || 'MANUAL';
   const isShopee = effectiveShippingMethod === 'SHOPEE';
@@ -396,7 +483,7 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       shopee_variant: isShopee ? shopeeVariant : null,
       tracking_number: initialTrackingNumber,
       shipping_cost: order.customer_shipping || 0,
-      status: 'WAITING_PACKING',
+      status: targetInitialStatus as any,
       notes:
         (itemsSummary
           ? `Item to pack: ${itemsSummary}`

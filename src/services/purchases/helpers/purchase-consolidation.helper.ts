@@ -99,16 +99,18 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
     return {
       id: p.id,
       purchase_id: p.id,
+      is_manual_purchase: isManualPurchase,
       order_item_id: p.order_item_id,
       order_id: order.id || null,
       order_number: isManualPurchase
-        ? 'LIVE-SHOPPING'
+        ? 'STOCK-PURCHASE'
         : order.order_number || `ORD-${order.id}`,
       customer_id: customer.id || null,
       customer_name: isManualPurchase
-        ? 'Live Shopping Stock'
+        ? 'Stock Purchase (Spare)'
         : customer.full_name || 'Customer',
       customer_whatsapp: customer.whatsapp || '',
+      whatsapp_group_name: customer.whatsapp_group?.name || null,
       customer_segment: isManualPurchase ? 'PRIORITY' : customer.segment || 'REGULAR',
       is_priority_customer: isPriorityCustomer,
       order_status: isManualPurchase ? 'PURCHASED' : order.status || 'NEW',

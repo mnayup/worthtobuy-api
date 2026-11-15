@@ -141,6 +141,7 @@ export async function createOrderItemWithProduct(
   }
 
   const activeProductId = pId || Number(item.product_id || item.productId) || null;
+  const reqQty = Math.max(1, Number(item.quantity || 1));
   let sourceType = item.source_type || item.sourceType || 'CATALOG';
   let resolvedProductSellingPrice = 0;
   let catalogProductName: string | null = createdProductRecord?.name || null;
@@ -154,8 +155,14 @@ export async function createOrderItemWithProduct(
     if (product) {
       catalogProductName = product.name;
       catalogProductBrand = product.brand_name;
-      if (product.stock_mode === 'READY_STOCK' || product.period?.type === 'LIVE_SHOPPING') {
+      const availableStock = Math.max(
+        0,
+        Number(product.stock_quantity || 0) - Number(product.reserved_quantity || 0)
+      );
+      if (product.stock_mode === 'READY_STOCK' || availableStock >= reqQty) {
         sourceType = 'READY_STOCK';
+      } else if (sourceType === 'READY_STOCK' && product.stock_mode !== 'READY_STOCK' && availableStock < reqQty) {
+        sourceType = 'CATALOG';
       }
       resolvedProductSellingPrice = Number(product.selling_price || 0);
       const vpRaw: any = product.variant_prices;
@@ -184,7 +191,7 @@ export async function createOrderItemWithProduct(
     const fallbackPeriod = await tx.jastip_period.findUnique({
       where: { id: Number(fallbackPeriodId) },
     });
-    if (fallbackPeriod?.type === 'LIVE_SHOPPING' || fallbackPeriod?.code === 'READY-STOCK') {
+    if (fallbackPeriod?.code === 'READY-STOCK') {
       sourceType = 'READY_STOCK';
     }
   }

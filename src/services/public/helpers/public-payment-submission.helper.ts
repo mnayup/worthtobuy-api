@@ -1,5 +1,9 @@
 import { sequence } from '../../../common/utils/http.utils';
 import { PrismaService } from '../../../config/prisma/prisma.service';
+import {
+  ensurePurchasesForOrderHelper,
+  ensureShipmentForOrderHelper,
+} from '../../shared/helpers/order-fulfillment.helper';
 
 export async function applyPublicShippingAndStoragePreferences(
   prisma: PrismaService,
@@ -132,7 +136,8 @@ export async function applyPublicShippingAndStoragePreferences(
 
     const targetShipments = await prisma.shipment.findMany({
       where: {
-        status: 'WAITING_PACKING',
+        status: { in: ['WAITING_VERIFICATION', 'WAITING_PACKING'] as any },
+        packed_at: null,
         OR: [
           { order_id: { in: orderIds } },
           { shipment_orders: { some: { order_id: { in: orderIds } } } },
@@ -245,6 +250,68 @@ export async function insertPaymentRecord(
   });
 
   await applyPublicShippingAndStoragePreferences(prisma, invoice, body);
+
+  // Check if customer has now uploaded full payment (verified + deposit + pending >= total_bill).
+  // If so, directly insert order(s) into shipment with status WAITING_VERIFICATION without waiting for verification first.
+  const orderIds = (invoice.orders || [])
+    .map((link: any) => link.order_id || link.order?.id)
+    .filter(Boolean);
+
+  if (orderIds.length > 0) {
+    const [freshInvoice, allActivePayments] = await Promise.all([
+      prisma.invoice.findUnique({
+        where: { id: invoice.id },
+        include: {
+          orders: {
+            include: {
+              order: {
+                include: { items: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.payment.findMany({
+        where: {
+          deleted_at: null,
+          status: { in: ['VERIFIED', 'PENDING'] },
+          OR: [{ invoice_id: invoice.id }, { order_id: { in: orderIds } }],
+        },
+        select: { amount: true, status: true },
+      }),
+    ]);
+
+    if (freshInvoice) {
+      const isOrderUnavailable = (ord: any) =>
+        !ord ||
+        ord.status === 'UNAVAILABLE' ||
+        (Array.isArray(ord.items) &&
+          ord.items.length > 0 &&
+          ord.items.every((it: any) => it.fulfillment_status === 'UNAVAILABLE'));
+
+      const billableTotal =
+        freshInvoice.orders.length > 0
+          ? freshInvoice.orders.reduce((sum, link) => {
+              if (isOrderUnavailable(link.order)) return sum;
+              return sum + Number(link.order?.total_bill ?? link.snapshot_amount ?? 0);
+            }, 0)
+          : Number(freshInvoice.total_bill || 0);
+
+      const depositAmount = Number(freshInvoice.deposit_amount || 0);
+      const totalUploadedAndVerified =
+        depositAmount +
+        allActivePayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      if (billableTotal > 0 && totalUploadedAndVerified >= billableTotal) {
+        for (const link of freshInvoice.orders) {
+          if (isOrderUnavailable(link.order)) continue;
+          await ensurePurchasesForOrderHelper(prisma, link.order_id);
+          await ensureShipmentForOrderHelper(prisma, link.order_id);
+        }
+        await applyPublicShippingAndStoragePreferences(prisma, freshInvoice, body);
+      }
+    }
+  }
 
   const customerName = invoice.customer?.full_name || 'Pelanggan';
   const notifMsg =

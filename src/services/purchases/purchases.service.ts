@@ -16,6 +16,7 @@ import {
 import {
   cleanPurchaseData,
   syncNewProductSpecsHelper,
+  syncPurchaseSpareStockHelper,
   updateConsolidatedPurchaseHelper,
 } from './helpers/purchase-update.helper';
 
@@ -107,7 +108,7 @@ export class PurchasesService {
             product: true,
             order: {
               include: {
-                customer: true,
+                customer: { include: { whatsapp_group: true } },
                 invoice_links: { include: { invoice: true } },
               },
             },
@@ -149,7 +150,7 @@ export class PurchasesService {
             product: true,
             order: {
               include: {
-                customer: true,
+                customer: { include: { whatsapp_group: true } },
                 invoice_links: { include: { invoice: true } },
               },
             },
@@ -201,19 +202,17 @@ export class PurchasesService {
     const oItemId = body.order_item_id ?? body.orderItemId;
     const cleaned = cleanPurchaseData(body);
 
-    // Manual purchase flow (no order_item_id) — only for LIVE_SHOPPING events
+    // Manual purchase flow (no order_item_id) — supported for both Normal Events and Live Shopping events
     if (!oItemId) {
       const periodId = cleaned.period_id || Number(body.period_id || body.periodId || 0);
       if (!periodId) {
-        throw new BadRequestException('Please select a Live Shopping event.');
+        throw new BadRequestException('Please select an event.');
       }
       const period = await this.prisma.jastip_period.findUnique({
         where: { id: Number(periodId) },
       });
-      if (!period || period.type !== 'LIVE_SHOPPING') {
-        throw new BadRequestException(
-          'Manual purchase without an ordered item is only allowed for Live Shopping events.'
-        );
+      if (!period) {
+        throw new BadRequestException('Selected event was not found.');
       }
 
       const parseTagList = (raw: any): string[] => {
@@ -387,7 +386,7 @@ export class PurchasesService {
       }
 
       if (!productId) {
-        throw new BadRequestException('Please select a product for this Live Shopping purchase.');
+        throw new BadRequestException('Please select a product for this event purchase.');
       }
 
       let product = await this.prisma.product.findUniqueOrThrow({
@@ -508,7 +507,7 @@ export class PurchasesService {
           totalPurchasedQty,
           userId,
           String(createdPurchases[0].id),
-          `Stok masuk (${totalPurchasedQty} pcs) dari pembelian Live Shopping (${period.name}).`
+          `Stok masuk (${totalPurchasedQty} pcs) dari pembelian event (${period.name}).`
         );
       }
 
@@ -656,8 +655,8 @@ export class PurchasesService {
       },
     });
 
-    // If manual Live Shopping purchase (no order_item_id), sync stock quantity changes
-    if (!current.order_item_id && current.product_id && current.period?.type === 'LIVE_SHOPPING') {
+    // If manual event purchase (no order_item_id), sync stock quantity changes
+    if (!current.order_item_id && current.product_id) {
       const oldEffectiveQty = current.status === 'PURCHASED' ? Number(current.quantity || 0) : 0;
       const newEffectiveQty = targetStatus === 'PURCHASED' ? nextQty : 0;
       const delta = newEffectiveQty - oldEffectiveQty;
@@ -668,7 +667,7 @@ export class PurchasesService {
           delta,
           userId,
           String(current.id),
-          'Penyesuaian stok dari pembaruan pembelian Live Shopping.'
+          'Penyesuaian stok dari pembaruan pembelian event.'
         );
       }
     } else if (body.status && body.status !== current.status && current.order_item && current.order_item_id) {
@@ -694,6 +693,15 @@ export class PurchasesService {
           userId
         );
       }
+    }
+
+    if (current.purchase_number && Array.isArray(body.sortingLines)) {
+      await syncPurchaseSpareStockHelper(
+        this.prisma,
+        this.stockService,
+        current.purchase_number,
+        userId
+      );
     }
 
     if (current.purchase_number) {
