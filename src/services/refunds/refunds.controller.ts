@@ -61,9 +61,16 @@ export class RefundsController {
 
   @Delete(':id')
   @RequirePermissions('refunds:delete')
-  async remove(@Param('id') id: string, @CurrentUser('id') userId: number, @Req() req: any) {
-    await this.refundsService.remove(Number(id), userId);
-    await auditLog(this.prisma, userId, 'MOVE_TO_TRASH', 'Refund', id, undefined, req.ip);
+  async remove(
+    @Param('id') id: string,
+    @Body() body: any,
+    @Query('confirmation') confirmationQuery: string | undefined,
+    @CurrentUser('id') userId: number,
+    @Req() req: any,
+  ) {
+    const confirmation = body?.confirmation ?? confirmationQuery;
+    const result = await this.refundsService.remove(Number(id), userId, confirmation);
+    await auditLog(this.prisma, userId, 'DELETE_REFUND', 'Refund', id, { refund_number: result.refund_number }, req.ip);
     return { success: true };
   }
 }

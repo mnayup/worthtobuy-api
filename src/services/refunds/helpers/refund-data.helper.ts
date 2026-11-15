@@ -103,7 +103,7 @@ export function buildRefundWhereClause(query: any): any {
     ...(source ? { source } : {}),
     ...(refund_type ? { refund_type } : {}),
     AND: [
-      { OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }] },
+      { OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }, { customer: { deleted_at: null } }] },
       ...searchFilter,
     ],
   };

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
 import { OrderItemsService } from './order-items.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -55,6 +55,14 @@ export class OrderItemsController {
   async updateStatus(@Param('id') id: string, @Body() body: any, @CurrentUser('id') userId: number, @Req() req: any) {
     const data = await this.orderItemsService.updateStatus(Number(id), body, userId);
     await auditLog(this.prisma, userId, 'STATUS_CHANGE', 'OrderItem', id, body, req.ip);
+    return data;
+  }
+
+  @Delete(':id')
+  @Roles('OWNER', 'ADMIN', 'FINANCE')
+  async remove(@Param('id') id: string, @CurrentUser('id') userId: number, @Req() req: any) {
+    const data = await this.orderItemsService.remove(Number(id), userId);
+    await auditLog(this.prisma, userId, 'DELETE', 'OrderItem', id, data, req.ip);
     return data;
   }
 }

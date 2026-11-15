@@ -4,12 +4,18 @@ import { InvoicesController } from './invoices.controller';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
 import { RefundService } from '../shared/refund.service';
 import { OrderStatusReconcilerService } from '../shared/order-status-reconciler.service';
-
+import { ReminderService } from '../shared/reminder.service';
 import { CustomersModule } from '../customers/customers.module';
 
 @Module({
   imports: [CustomersModule],
-  providers: [InvoicesService, InvoiceCalcService, RefundService, OrderStatusReconcilerService],
+  providers: [
+    InvoicesService,
+    InvoiceCalcService,
+    RefundService,
+    OrderStatusReconcilerService,
+    ReminderService,
+  ],
   controllers: [InvoicesController],
   exports: [InvoicesService],
 })

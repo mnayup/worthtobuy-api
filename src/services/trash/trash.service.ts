@@ -102,6 +102,16 @@ export class TrashService {
       const activeInvoice = await this.prisma.invoice.findFirst({ where: { id: data.invoice_id, deleted_at: null } });
       if (activeInvoice) await this.invoiceCalcService.refreshInvoicePayment(data.invoice_id);
     }
+    if (entity === 'REFUND') {
+      let customerId: number | null = data.customer_id ?? null;
+      if (!customerId && data.order_id) {
+        customerId = (await this.prisma.order.findUnique({ where: { id: data.order_id }, select: { customer_id: true } }))?.customer_id ?? null;
+      }
+      if (!customerId && data.invoice_id) {
+        customerId = (await this.prisma.invoice.findUnique({ where: { id: data.invoice_id }, select: { customer_id: true } }))?.customer_id ?? null;
+      }
+      if (customerId) await this.invoiceCalcService.syncCustomerDepositBalance(customerId);
+    }
     if (entity === 'INVOICE') {
       await this.invoiceCalcService.refreshInvoicePayment(id);
     }

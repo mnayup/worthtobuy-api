@@ -25,14 +25,14 @@ export class RefundsService {
       by: ['status'],
       where: {
         deleted_at: null,
-        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }],
+        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }, { customer: { deleted_at: null } }],
       },
       _count: { id: true },
     });
     const total = await this.prisma.refund.count({
       where: {
         deleted_at: null,
-        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }],
+        OR: [{ order: { deleted_at: null } }, { invoice: { deleted_at: null } }, { customer: { deleted_at: null } }],
       },
     });
     const summary: Record<string, number> = { TOTAL: total };
@@ -85,6 +85,8 @@ export class RefundsService {
     }
 
     const refund_type = cleaned.refund_type || 'CUSTOMER_DEPOSIT';
+    const refunded_at =
+      cleaned.refunded_at ?? (cleaned.status === 'PAID' ? new Date() : undefined);
 
     const data = await this.prisma.refund.create({
       data: {
@@ -93,6 +95,7 @@ export class RefundsService {
         invoice_id: resolvedInvoiceId,
         customer_id,
         refund_type,
+        ...(refunded_at !== undefined ? { refunded_at } : {}),
         refund_number: cleaned.refund_number || sequence('REF'),
         auto_generated: false,
       },
@@ -229,24 +232,98 @@ export class RefundsService {
     });
   }
 
-  async remove(id: number, user_id?: number) {
-    const current = await this.prisma.refund.findUniqueOrThrow({ where: { id } });
-    if (current.auto_generated) {
-      throw new BadRequestException('Refund yang dibuat otomatis oleh sistem tidak dapat dihapus.');
-    }
-
-    const data = await this.prisma.refund.update({
-      where: { id },
-      data: { deleted_at: new Date(), deleted_by_id: user_id },
+  /**
+   * Delete a finished refund (PAID or REJECTED only).
+   *
+   * Financial effects are recalculated from source data, never patched manually:
+   * - PAID + CUSTOMER_DEPOSIT → customer's deposit balance is reduced by the refund amount.
+   *   Blocked when that deposit has already been consumed by invoices (balance would go negative).
+   * - PAID + MANUAL source → invoice paid_amount is restored (manual refunds deduct paid amount).
+   * - PAID + OVERPAYMENT source → the overpayment re-opens and the system re-raises a fresh
+   *   REQUESTED refund, so no customer money is silently lost.
+   * - REJECTED → no money effect; the record is only removed from the list.
+   *
+   * Auto-generated refunds keep their source_key as a tombstone so the auto-refund engine
+   * does not resurrect an item/shipping refund that admin explicitly removed.
+   */
+  async remove(id: number, user_id?: number, confirmation?: string) {
+    const current = await this.prisma.refund.findFirst({
+      where: { id, deleted_at: null },
       include: { order: true, invoice: true },
     });
-    if (data.invoice_id) {
-      await this.invoiceCalcService.refreshInvoicePayment(data.invoice_id);
+    if (!current) {
+      throw new BadRequestException('Data refund tidak ditemukan atau sudah dihapus.');
     }
-    const customer_id = data.customer_id || data.order?.customer_id || data.invoice?.customer_id;
+
+    if (!['PAID', 'REJECTED'].includes(current.status)) {
+      throw new BadRequestException(
+        'Hanya refund berstatus PAID atau REJECTED yang dapat dihapus. Selesaikan atau tolak refund terlebih dahulu.'
+      );
+    }
+
+    if (String(confirmation ?? '').trim() !== current.refund_number) {
+      throw new BadRequestException(
+        `Konfirmasi tidak cocok. Ketik "${current.refund_number}" untuk menghapus refund ini.`
+      );
+    }
+
+    const customer_id =
+      current.customer_id || current.order?.customer_id || current.invoice?.customer_id || null;
+
+    const isPaidDeposit = current.status === 'PAID' && current.refund_type === 'CUSTOMER_DEPOSIT';
+    if (isPaidDeposit && customer_id) {
+      const balance = await this.customersService.getDepositBalance(customer_id);
+      const amount = Number(current.amount || 0);
+      if (balance.availableDeposit < amount) {
+        const usedOn = balance.usedInvoices.map((inv: any) => inv.invoice_number).join(', ');
+        throw new BadRequestException(
+          `Saldo deposit pelanggan tidak cukup untuk dikurangi (Tersedia: Rp ${balance.availableDeposit.toLocaleString('id-ID')}, ` +
+          `refund: Rp ${amount.toLocaleString('id-ID')}). Deposit sudah terpakai pada invoice: ${usedOn || '-'}. ` +
+          'Batalkan pemakaian deposit di invoice tersebut terlebih dahulu.'
+        );
+      }
+    }
+
+    await this.prisma.refund.update({
+      where: { id },
+      data: { deleted_at: new Date(), deleted_by_id: user_id },
+    });
+
+    // Revert order status flag set when this refund was paid, if no other paid refund remains
+    if (current.status === 'PAID' && current.order_id && current.order?.status === 'REFUND') {
+      await this.restoreOrderStatusAfterRefundRemoval(current.order_id);
+    }
+
+    if (current.invoice_id) {
+      await this.invoiceCalcService.refreshInvoicePayment(current.invoice_id);
+    }
     if (customer_id) {
       await this.customersService.recalculateCustomerDeposit(customer_id);
     }
-    return { success: true };
+    return { success: true, refund_number: current.refund_number };
+  }
+
+  private async restoreOrderStatusAfterRefundRemoval(order_id: number) {
+    const otherPaid = await this.prisma.refund.count({
+      where: { order_id, deleted_at: null, status: 'PAID' },
+    });
+    if (otherPaid > 0) return;
+
+    const items = await this.prisma.order_item.findMany({
+      where: { order_id },
+      select: { fulfillment_status: true },
+    });
+    const statuses = items.map((item) => item.fulfillment_status as string);
+    let status: any = 'WAITING_PURCHASE';
+    if (!statuses.length) status = 'WAITING_PURCHASE';
+    else if (statuses.every((v) => v === 'DELIVERED')) status = 'COMPLETED';
+    else if (statuses.every((v) => ['SHIPPED', 'DELIVERED'].includes(v))) status = 'SHIPPED';
+    else if (statuses.every((v) => v === 'UNAVAILABLE')) status = 'UNAVAILABLE';
+    else if (statuses.some((v) => v === 'KEPT')) status = 'PURCHASED';
+    else if (statuses.every((v) => ['AVAILABLE', 'READY_TO_SHIP', 'UNAVAILABLE'].includes(v))) status = 'READY_TO_SHIP';
+    else if (statuses.some((v) => v === 'AVAILABLE')) status = 'PURCHASED';
+    else if (statuses.some((v) => v === 'SEARCHING')) status = 'SEARCHING';
+
+    await this.prisma.order.update({ where: { id: order_id }, data: { status } });
   }
 }

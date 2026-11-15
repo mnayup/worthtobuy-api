@@ -161,7 +161,7 @@ export const PERMISSION_CATALOG: ModuleDef[] = [
       { key: 'view', label: 'View Refunds' },
       { key: 'request', label: 'Pilih Metode & Input Rekening Refund' },
       { key: 'execute', label: 'Kirim Dana & Upload Bukti Transfer' },
-      { key: 'delete', label: 'Delete Refund' },
+      { key: 'delete', label: 'Hapus Refund (status PAID / REJECTED)' },
     ],
   },
   {

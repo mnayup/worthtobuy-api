@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma/prisma.service';
 import { StockService } from '../shared/stock.service';
 import { RefundService } from '../shared/refund.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
+import { FeeService } from '../shared/fee.service';
+import { ReminderService } from '../shared/reminder.service';
+import { calculateOrderTotals } from '../orders/helpers/orders-calculation.helper';
 
 @Injectable()
 export class OrderItemsService {
@@ -11,6 +14,8 @@ export class OrderItemsService {
     private stockService: StockService,
     private refundService: RefundService,
     private invoiceCalcService: InvoiceCalcService,
+    private feeService: FeeService,
+    private reminderService: ReminderService,
   ) { }
 
   private async refreshOrderItemSummary(order_id: number) {
@@ -330,5 +335,152 @@ export class OrderItemsService {
     }
 
     return { success: true, count: validIds.length };
+  }
+
+  async remove(id: number, user_id?: number) {
+    const item = await this.prisma.order_item.findUniqueOrThrow({
+      where: { id },
+      include: {
+        order: {
+          include: {
+            items: true,
+            payments: { where: { status: 'VERIFIED', deleted_at: null } },
+            invoice_links: {
+              include: {
+                invoice: {
+                  include: {
+                    payments: { where: { status: 'VERIFIED', deleted_at: null } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const order = item.order;
+    const directPaid = Number(order.paid_amount || 0);
+    const verifiedOrderPayments = (order.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+    const activeInvoiceLink = (order.invoice_links || []).find(
+      (l) => l.invoice && !l.invoice.deleted_at && l.invoice.status !== 'CANCELLED'
+    );
+    const invoice = activeInvoiceLink?.invoice;
+    const invoicePaid = invoice ? Number(invoice.paid_amount || 0) : 0;
+    const verifiedInvoicePayments = (invoice?.payments || []).reduce(
+      (sum, p) => sum + Number(p.amount || 0),
+      0
+    );
+
+    const isPaidOrDp =
+      directPaid > 0 ||
+      verifiedOrderPayments > 0 ||
+      invoicePaid > 0 ||
+      verifiedInvoicePayments > 0 ||
+      !['NEW', 'WAITING_DP'].includes(order.status);
+
+    if (isPaidOrDp) {
+      throw new BadRequestException(
+        `Item ini tidak dapat dihapus karena pesanan (${order.order_number}) sudah memiliki pembayaran DP/Lunas atau sedang diproses.`
+      );
+    }
+
+    const remainingItems = order.items.filter((it) => it.id !== id);
+    const affectedInvoiceIds = (order.invoice_links || [])
+      .map((l) => l.invoice_id)
+      .filter(Boolean);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (
+        item.source_type === 'READY_STOCK' &&
+        item.product_id &&
+        !['UNAVAILABLE', 'SHIPPED', 'DELIVERED'].includes(item.fulfillment_status)
+      ) {
+        await this.stockService.releaseReadyStock(
+          tx,
+          item.product_id,
+          item.quantity,
+          user_id,
+          String(item.id),
+          'Stok dilepas karena item dihapus dari invoice/pesanan.'
+        );
+      }
+
+      await tx.purchase.deleteMany({ where: { order_item_id: id } });
+      await tx.order_item.delete({ where: { id } });
+
+      if (remainingItems.length === 0) {
+        // Last item in this order: soft-delete the order and unlink from invoice
+        await tx.invoice_order.deleteMany({ where: { order_id: order.id } });
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            deleted_at: new Date(),
+            deleted_by_id: user_id,
+          },
+        });
+      } else {
+        // Recalculate order service fee & totals with remaining items
+        const service_fee_mode = order.service_fee_mode;
+        const isReseller = service_fee_mode === 'AUTO_RESELLER';
+        const isAuto =
+          service_fee_mode === 'AUTO' ||
+          service_fee_mode === 'AUTO_CUSTOMER' ||
+          isReseller;
+        const rules = await this.feeService.getFeeRules(isReseller ? 'RESELLER' : 'CUSTOMER');
+        const automatic = this.feeService.calculateItemsServiceFee(remainingItems, rules);
+        const resolvedServiceFee = isAuto ? automatic.fee : Number(order.service_fee || 0);
+
+        const totals = calculateOrderTotals(
+          {
+            ...order,
+            service_fee: resolvedServiceFee,
+            customer_shipping: Number(order.customer_shipping || 0),
+            local_shipping: Number(order.local_shipping || 0),
+            additional_fee: Number(order.additional_fee || 0),
+            discount: Number(order.discount || 0),
+          },
+          remainingItems
+        );
+
+        await tx.order.update({
+          where: { id: order.id },
+          data: totals,
+        });
+
+        await tx.invoice_order.updateMany({
+          where: { order_id: order.id },
+          data: { snapshot_amount: totals.total_bill },
+        });
+      }
+    });
+
+    if (remainingItems.length > 0) {
+      await this.refreshOrderItemSummary(order.id);
+    }
+
+    for (const invId of affectedInvoiceIds) {
+      await this.prisma.invoice.update({
+        where: { id: invId },
+        data: { due_date: new Date() },
+      });
+      await this.invoiceCalcService.refreshInvoicePayment(invId, {
+        revertCustomerCheck: true,
+      });
+    }
+
+    if (affectedInvoiceIds.length > 0) {
+      await this.reminderService.syncPaymentReminders().catch(() => {});
+    }
+
+    return {
+      success: true,
+      orderDeleted: remainingItems.length === 0,
+      orderId: order.id,
+      invoiceIds: affectedInvoiceIds,
+    };
   }
 }

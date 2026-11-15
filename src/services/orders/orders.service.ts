@@ -494,7 +494,9 @@ export class OrdersService {
       if (data.invoice_links?.length) {
         for (const link of data.invoice_links) {
           if (link.invoice_id) {
-            await this.invoiceCalcService.refreshInvoicePayment(link.invoice_id);
+            await this.invoiceCalcService.refreshInvoicePayment(link.invoice_id, {
+              revertCustomerCheck: true,
+            });
           }
         }
       } else {

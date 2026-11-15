@@ -21,7 +21,7 @@ export class InvoiceCalcService {
     return ensureShipmentForOrderHelper(this.prisma, order_id);
   }
 
-  private async syncCustomerDepositBalance(customer_id: number) {
+  async syncCustomerDepositBalance(customer_id: number) {
     const depositRefunds = await this.prisma.refund.findMany({
       where: {
         deleted_at: null,
@@ -53,7 +53,7 @@ export class InvoiceCalcService {
     });
   }
 
-  async refreshInvoicePayment(invoice_id: number) {
+  async refreshInvoicePayment(invoice_id: number, options?: { revertCustomerCheck?: boolean }) {
     const invoice = await this.prisma.invoice.findUniqueOrThrow({
       where: { id: invoice_id },
       include: {
@@ -76,7 +76,7 @@ export class InvoiceCalcService {
       },
     });
     const orderIds = invoice.orders.map((link) => link.order_id);
-    const [payments, settledOverpaymentRefunds, unresolvedItemRefunds] = await Promise.all([
+    const [payments, settledOverpaymentRefunds, paidManualRefundsList, unresolvedItemRefunds] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           status: 'VERIFIED',
@@ -86,10 +86,30 @@ export class InvoiceCalcService {
         orderBy: [{ payment_date: 'asc' }, { id: 'asc' }],
       }),
       this.prisma.refund.findMany({
-        where: { invoice_id, source: 'OVERPAYMENT', status: { in: ['PAID', 'REJECTED'] } },
+        where: {
+          invoice_id,
+          source: 'OVERPAYMENT',
+          // PAID counts only while active (deleting it re-opens the overpayment).
+          // REJECTED stays "settled" even if the record was deleted, so removing a rejected
+          // refund from the list never re-locks the invoice into REFUND_DUE.
+          OR: [{ deleted_at: null, status: 'PAID' }, { status: 'REJECTED' }],
+        },
+      }),
+      this.prisma.refund.findMany({
+        where: {
+          deleted_at: null,
+          source: 'MANUAL',
+          status: 'PAID',
+          OR: [{ invoice_id }, ...(orderIds.length ? [{ order_id: { in: orderIds } }] : [])],
+        },
       }),
       this.prisma.refund.count({
-        where: { invoice_id, source: 'UNAVAILABLE_ITEM', status: { in: ['REQUESTED', 'ON_PROCESS', 'APPROVED'] } },
+        where: {
+          deleted_at: null,
+          OR: [{ invoice_id }, ...(orderIds.length ? [{ order_id: { in: orderIds } }] : [])],
+          source: { in: ['UNAVAILABLE_ITEM', 'MANUAL'] },
+          status: { in: ['REQUESTED', 'ON_PROCESS', 'APPROVED'] },
+        },
       }),
     ]);
 
@@ -108,7 +128,12 @@ export class InvoiceCalcService {
       return Number(link.order ? link.order.total_bill : link.snapshot_amount || 0);
     };
 
-    const paid_amount = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+    const grossPaid = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+    const paidManualRefundTotal = paidManualRefundsList.reduce(
+      (sum, refund) => sum + Number(refund.amount),
+      0
+    );
+    const paid_amount = Math.max(0, grossPaid - paidManualRefundTotal);
     const deposit_amount = Number(invoice.deposit_amount || 0);
 
     const total_bill = invoice.orders.length > 0
@@ -123,10 +148,13 @@ export class InvoiceCalcService {
     );
     const overpayment_amount = Math.max(0, effectivePaid - total_bill - refundedOverpayment);
 
-    let status: 'ISSUED' | 'PARTIAL' | 'PAID' | 'OVERPAID' | 'REFUND_DUE' = 'ISSUED';
+    let status: 'ISSUED' | 'CUSTOMER_CHECKED' | 'PARTIAL' | 'PAID' | 'OVERPAID' | 'REFUND_DUE' = 'ISSUED';
     if (overpayment_amount > 0 || unresolvedItemRefunds > 0) status = 'REFUND_DUE';
-    else if (outstanding_amount <= 0) status = 'PAID';
+    else if (outstanding_amount <= 0 && (effectivePaid > 0 || total_bill <= 0)) status = 'PAID';
     else if (effectivePaid > 0) status = 'PARTIAL';
+    else if (invoice.status === 'CUSTOMER_CHECKED' && !options?.revertCustomerCheck) {
+      status = 'CUSTOMER_CHECKED';
+    }
 
     let nextDpAmount: number | undefined;
     if (invoice.billing_model === 'DP') {
@@ -154,6 +182,30 @@ export class InvoiceCalcService {
     for (const payment of payments) {
       if (payment.order_id) directByOrder.set(payment.order_id, (directByOrder.get(payment.order_id) || 0) + Number(payment.amount));
       else invoicePool += Number(payment.amount);
+    }
+
+    // Deduct paid manual refunds from order direct allocations and invoicePool
+    for (const mRefund of paidManualRefundsList) {
+      let rem = Number(mRefund.amount || 0);
+      if (mRefund.order_id && directByOrder.has(mRefund.order_id)) {
+        const curDirect = directByOrder.get(mRefund.order_id) || 0;
+        const deductDirect = Math.min(curDirect, rem);
+        directByOrder.set(mRefund.order_id, curDirect - deductDirect);
+        rem -= deductDirect;
+      }
+      if (rem > 0) {
+        const deductPool = Math.min(invoicePool, rem);
+        invoicePool -= deductPool;
+        rem -= deductPool;
+      }
+      if (rem > 0) {
+        for (const [ordId, curDirect] of directByOrder.entries()) {
+          if (rem <= 0) break;
+          const deduct = Math.min(curDirect, rem);
+          directByOrder.set(ordId, curDirect - deduct);
+          rem -= deduct;
+        }
+      }
     }
 
     // In a multi-order invoice, if a payment was registered with an order_id but its amount

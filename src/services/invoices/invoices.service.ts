@@ -11,6 +11,7 @@ import {
   validateInvoiceOrders,
   extractLegacyInvoiceIds,
 } from './helpers/invoice-validation.helper';
+import { ReminderService } from '../shared/reminder.service';
 
 @Injectable()
 export class InvoicesService {
@@ -18,6 +19,7 @@ export class InvoicesService {
     private prisma: PrismaService,
     private invoiceCalcService: InvoiceCalcService,
     private customersService: CustomersService,
+    private reminderService: ReminderService,
   ) { }
 
   async getSummary() {
@@ -49,7 +51,7 @@ export class InvoicesService {
         include: {
           customer: true,
           orders: { include: { order: { include: { period: true } } } },
-          payments: { where: { status: 'VERIFIED', deleted_at: null }, orderBy: { payment_date: 'desc' } },
+          payments: { where: { status: { in: ['VERIFIED', 'PENDING'] }, deleted_at: null }, orderBy: { payment_date: 'desc' } },
           refunds: { where: { status: { not: 'REJECTED' }, deleted_at: null } },
         },
       }),
@@ -540,7 +542,14 @@ export class InvoicesService {
     const billing_model = body.billing_model !== undefined ? body.billing_model : body.billingModel;
     const invoice_number = body.invoice_number !== undefined ? body.invoice_number : body.invoiceNumber;
     const invoice_date = body.invoice_date !== undefined ? new Date(body.invoice_date) : body.invoiceDate !== undefined ? new Date(body.invoiceDate) : undefined;
-    const due_date = body.due_date !== undefined ? (body.due_date ? new Date(body.due_date) : null) : body.dueDate !== undefined ? (body.dueDate ? new Date(body.dueDate) : null) : undefined;
+    // If due_date is explicitly passed, use it. Otherwise, upon edit update due_date to today / now so reminders stay fresh.
+    const resolvedDueDate =
+      body.due_date !== undefined
+        ? (body.due_date ? new Date(body.due_date) : null)
+        : body.dueDate !== undefined
+          ? (body.dueDate ? new Date(body.dueDate) : null)
+          : new Date();
+    const due_date = resolvedDueDate;
 
     let total_bill = Number(current.total_bill);
     if (hasOrderChange) {
@@ -637,18 +646,244 @@ export class InvoicesService {
       }
     }
 
-    const refreshed = await this.invoiceCalcService.refreshInvoicePayment(id);
+    const refreshed = await this.invoiceCalcService.refreshInvoicePayment(id, {
+      revertCustomerCheck: true,
+    });
     await this.customersService.recalculateCustomerDeposit(customer_id);
+    await this.reminderService.syncPaymentReminders().catch(() => {});
     return refreshed;
   }
 
-  async remove(id: number, user_id?: number) {
-    const current = await this.prisma.invoice.findUniqueOrThrow({ where: { id } });
-    await this.prisma.invoice.update({
+  async remove(id: number, _user_id?: number) {
+    const exists = await this.prisma.invoice.findUniqueOrThrow({
       where: { id },
-      data: { deleted_at: new Date(), deleted_by_id: user_id },
+      select: { id: true, deleted_at: true },
     });
+    if (!exists.deleted_at) {
+      await this.invoiceCalcService.refreshInvoicePayment(id);
+    }
+
+    const current = await this.prisma.invoice.findUniqueOrThrow({
+      where: { id },
+      include: {
+        orders: {
+          include: {
+            order: {
+              include: {
+                items: { include: { purchases: true } },
+                shipments: true,
+                shipment_orders: { include: { shipment: true } },
+              },
+            },
+          },
+        },
+        payments: true,
+        refunds: true,
+      },
+    });
+
+    const orderIds = current.orders.map((link) => link.order_id);
+    const allRelatedPayments = await this.prisma.payment.findMany({
+      where: {
+        deleted_at: null,
+        OR: [
+          { invoice_id: id },
+          ...(orderIds.length > 0 ? [{ order_id: { in: orderIds } }] : []),
+        ],
+      },
+    });
+
+    const pendingPayments = allRelatedPayments.filter(
+      (p) => p.status === 'PENDING'
+    );
+    if (pendingPayments.length > 0) {
+      throw new BadRequestException(
+        `Invoice ${current.invoice_number} tidak dapat dihapus karena masih memiliki ${pendingPayments.length} bukti pembayaran berstatus PENDING (belum diverifikasi). Silakan verifikasi atau tolak bukti pembayaran terlebih dahulu.`
+      );
+    }
+
+    const netPaid = Number(current.paid_amount || 0);
+    if (netPaid > 0) {
+      throw new BadRequestException(
+        `Invoice ${current.invoice_number} tidak dapat dihapus karena masih memiliki pembayaran sebesar Rp ${netPaid.toLocaleString('id-ID')}. Silakan lakukan Manual Refund terlebih dahulu pada tabel Refund History agar pembayaran menjadi Rp 0.`
+      );
+    }
+
+    const activeUnpaidRefunds = current.refunds.filter(
+      (r) =>
+        !r.deleted_at &&
+        ['REQUESTED', 'ON_PROCESS', 'APPROVED'].includes(r.status)
+    );
+    if (activeUnpaidRefunds.length > 0) {
+      throw new BadRequestException(
+        `Invoice ${current.invoice_number} masih memiliki proses refund yang belum selesai (${activeUnpaidRefunds.map((r) => r.refund_number).join(', ')}). Selesaikan proses refund hingga berstatus PAID terlebih dahulu.`
+      );
+    }
+
+    for (const link of current.orders) {
+      const ord = link.order;
+      if (!ord) continue;
+      if (['SHIPPED', 'COMPLETED'].includes(ord.status)) {
+        throw new BadRequestException(
+          `Invoice ${current.invoice_number} tidak dapat dihapus karena pesanan ${ord.order_number} sudah dikirim atau selesai (${ord.status}).`
+        );
+      }
+      const allShipments = [
+        ...(ord.shipments || []),
+        ...(ord.shipment_orders || []).map((so) => so.shipment).filter(Boolean),
+      ];
+      const alreadyShipped = allShipments.some((s) =>
+        ['HANDED_TO_COURIER', 'IN_TRANSIT', 'DELIVERED'].includes(s.status)
+      );
+      if (alreadyShipped) {
+        throw new BadRequestException(
+          `Invoice ${current.invoice_number} tidak dapat dihapus karena pengiriman untuk pesanan ${ord.order_number} sudah diserahkan ke kurir / terkirim.`
+        );
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Preserve PAID refunds (detaching invoice_id so FK deletion succeeds and deposit balance remains intact), delete non-PAID refunds
+      for (const r of current.refunds) {
+        if (r.status === 'PAID') {
+          const tag = `[Ex-Invoice: ${current.invoice_number}]`;
+          const nextNotes = r.notes
+            ? r.notes.includes(current.invoice_number)
+              ? r.notes
+              : `${r.notes} ${tag}`
+            : tag;
+          await tx.refund.update({
+            where: { id: r.id },
+            data: {
+              customer_id: r.customer_id || current.customer_id,
+              invoice_id: null,
+              order_id: null,
+              notes: nextNotes,
+            },
+          });
+        } else {
+          await tx.refund.delete({ where: { id: r.id } });
+        }
+      }
+
+      // 2. Detach VERIFIED payments (which were already offset by manual refunds) so they don't block FK or affect future order invoices; delete non-VERIFIED payments
+      const relatedPayments = await tx.payment.findMany({
+        where: {
+          OR: [
+            { invoice_id: id },
+            ...(orderIds.length > 0 ? [{ order_id: { in: orderIds } }] : []),
+          ],
+        },
+      });
+      for (const p of relatedPayments) {
+        if (p.status === 'VERIFIED') {
+          const tag = `[Refunded & Ex-Invoice: ${current.invoice_number}]`;
+          const nextNotes = p.notes
+            ? p.notes.includes(current.invoice_number)
+              ? p.notes
+              : `${p.notes} ${tag}`
+            : tag;
+          await tx.payment.update({
+            where: { id: p.id },
+            data: {
+              invoice_id: null,
+              order_id: null,
+              notes: nextNotes,
+            },
+          });
+        } else {
+          await tx.payment.delete({ where: { id: p.id } });
+        }
+      }
+
+      // 3. Rollback each order contained in this invoice
+      for (const link of current.orders) {
+        const ord = link.order;
+        if (!ord) continue;
+
+        // Clean up unpacked shipments associated with this order
+        const affectedShipmentIds = new Set<number>();
+        for (const s of ord.shipments || []) {
+          if (s?.id) affectedShipmentIds.add(s.id);
+        }
+        for (const so of ord.shipment_orders || []) {
+          if (so?.shipment_id) affectedShipmentIds.add(so.shipment_id);
+        }
+
+        await tx.shipment_order.deleteMany({
+          where: { order_id: ord.id },
+        });
+
+        for (const shipId of affectedShipmentIds) {
+          const remainingLinks = await tx.shipment_order.findMany({
+            where: { shipment_id: shipId },
+            orderBy: { id: 'asc' },
+          });
+          if (remainingLinks.length === 0) {
+            await tx.shipment.deleteMany({
+              where: { id: shipId },
+            });
+          } else {
+            await tx.shipment.updateMany({
+              where: { id: shipId, order_id: ord.id },
+              data: { order_id: remainingLinks[0].order_id },
+            });
+          }
+        }
+
+        // Rollback order items (clear kept_until, revert KEPT -> AVAILABLE, clean up WAITING_PURCHASE queue)
+        for (const item of ord.items || []) {
+          const waitingPurchaseIds = (item.purchases || [])
+            .filter((pur: any) => pur.status === 'WAITING_PURCHASE')
+            .map((pur: any) => pur.id);
+          if (waitingPurchaseIds.length > 0) {
+            await tx.purchase.deleteMany({
+              where: { id: { in: waitingPurchaseIds } },
+            });
+          }
+
+          const nextFulfillment =
+            item.fulfillment_status === 'KEPT'
+              ? 'AVAILABLE'
+              : item.fulfillment_status;
+          const nextPurchaseStatus =
+            item.purchase_status === 'WAITING_PURCHASE'
+              ? 'PENDING'
+              : item.purchase_status;
+
+          await tx.order_item.update({
+            where: { id: item.id },
+            data: {
+              kept_until: null,
+              fulfillment_status: nextFulfillment,
+              purchase_status: nextPurchaseStatus,
+            },
+          });
+        }
+
+        // Rollback order status to NEW and reset paid_amount to 0
+        if (!ord.deleted_at) {
+          await tx.order.update({
+            where: { id: ord.id },
+            data: {
+              status: 'NEW',
+              paid_amount: 0,
+              outstanding_amount: Number(ord.total_bill || 0),
+            },
+          });
+        }
+      }
+
+      // 4. Delete invoice_order links and permanently delete the invoice itself
+      await tx.invoice_order.deleteMany({ where: { invoice_id: id } });
+      await tx.invoice.delete({ where: { id } });
+    });
+
     await this.customersService.recalculateCustomerDeposit(current.customer_id);
-    return { success: true };
+    return {
+      success: true,
+      deletedInvoiceNumber: current.invoice_number,
+      rolledBackOrders: orderIds.length,
+    };
   }
 }

@@ -98,6 +98,16 @@ export async function fetchPublicInvoiceData(
     throw new NotFoundException(`Invoice "${cleanNumber}" tidak ditemukan.`);
   }
 
+  // Trigger CUSTOMER_CHECKED status when the customer opens this public invoice page
+  // (only if still ISSUED and not yet paid)
+  if (invoice.status === 'ISSUED' && Number(invoice.paid_amount || 0) <= 0) {
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: { status: 'CUSTOMER_CHECKED' as any },
+    });
+    (invoice as any).status = 'CUSTOMER_CHECKED';
+  }
+
   // Ensure total_bill and outstanding_amount exclude unavailable orders/items
   if (Array.isArray(invoice.orders) && invoice.orders.length > 0) {
     const isOrderUnavailable = (ord: any) =>
@@ -170,6 +180,8 @@ export async function fetchPublicInvoiceData(
         brandSettings.qrisImageUrl ||
         process.env.DEFAULT_QRIS_IMAGE_URL ||
         '',
+      feeRules: settings['feeRules'] || null,
+      feeRulesReseller: settings['feeRulesReseller'] || null,
     },
   };
 }
@@ -196,6 +208,12 @@ export async function createPublicPaymentProof(
 
   if (!invoice) {
     throw new NotFoundException(`Invoice "${cleanNumber}" tidak ditemukan.`);
+  }
+
+  if (invoice.status === 'ISSUED' && Number(invoice.paid_amount || 0) <= 0) {
+    throw new BadRequestException(
+      'Invoice ini sedang direvisi/diterbitkan ulang oleh Admin. Silakan muat ulang (refresh) halaman ini terlebih dahulu untuk mengecek rincian pesanan terbaru sebelum melakukan transfer.'
+    );
   }
 
   if (Number(invoice.outstanding_amount) <= 0 || invoice.status === 'PAID') {
