@@ -338,12 +338,48 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
     }
   }
 
-  const isShopee = order.shipping_method === 'SHOPEE';
-  const defaultCourier = isShopee ? 'Shopee' : 'JNE';
-  const defaultService = isShopee ? 'Checkout Shopee' : null;
+  const linkedInvoice: any = order.invoice_links?.[0]?.invoice;
+  const effectiveShippingMethod =
+    order.shipping_method || linkedInvoice?.shipping_method || 'MANUAL';
+  const isShopee = effectiveShippingMethod === 'SHOPEE';
+  const manualCourier =
+    order.shipping_courier || linkedInvoice?.shipping_courier || 'JNE';
+  const manualService =
+    order.shipping_service || linkedInvoice?.shipping_service || null;
+  const shopeeUsername =
+    order.shopee_username || linkedInvoice?.shopee_username || null;
+  const shopeeOrderNo =
+    order.shopee_order_no || linkedInvoice?.shopee_order_no || null;
+  const shopeeVariant =
+    order.shopee_variant || linkedInvoice?.shopee_variant || null;
+
+  const defaultCourier = isShopee ? 'Shopee (Checkout Shopee)' : manualCourier;
+  const defaultService = isShopee ? 'Checkout Shopee' : manualService;
   const shopeeNote = isShopee
-    ? ` [Kirim via Shopee${order.shopee_username ? ` - Akun: ${order.shopee_username}` : ''}]`
+    ? ` [Kirim via Shopee${shopeeOrderNo ? ` - No. Pesanan: ${shopeeOrderNo}` : ''}${shopeeVariant ? ` - Varian: ${shopeeVariant}` : ''}]`
     : '';
+
+  let initialTrackingNumber: string | null = null;
+  if (isShopee && shopeeOrderNo) {
+    const existingTracking = await prisma.shipment.findFirst({
+      where: { tracking_number: shopeeOrderNo },
+    });
+    if (!existingTracking) {
+      initialTrackingNumber = shopeeOrderNo;
+    }
+  }
+
+  let matchedCounterId: number | null = null;
+  if (!isShopee && manualCourier) {
+    const counter = await prisma.shipping_counter.findFirst({
+      where: {
+        deleted_at: null,
+        is_active: true,
+        name: { equals: manualCourier, mode: 'insensitive' },
+      },
+    });
+    if (counter) matchedCounterId = counter.id;
+  }
 
   // Create new shipment
   const newShipment = await prisma.shipment.create({
@@ -353,9 +389,12 @@ export async function ensureShipmentForOrderHelper(prisma: PrismaService, order_
       address,
       courier: defaultCourier,
       service_type: defaultService,
-      shipping_method: order.shipping_method || 'MANUAL',
-      shopee_username: order.shopee_username || null,
-      tracking_number: null,
+      shipping_counter_id: matchedCounterId,
+      shipping_method: effectiveShippingMethod,
+      shopee_username: shopeeUsername,
+      shopee_order_no: isShopee ? shopeeOrderNo : null,
+      shopee_variant: isShopee ? shopeeVariant : null,
+      tracking_number: initialTrackingNumber,
       shipping_cost: order.customer_shipping || 0,
       status: 'WAITING_PACKING',
       notes:

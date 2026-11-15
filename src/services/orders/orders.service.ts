@@ -173,7 +173,7 @@ export class OrdersService {
         },
       });
 
-      let sharedCreatedProductId: number | null = null;
+      const createdProductsMap = new Map<string, number>();
       for (const item of body.items || []) {
         await createOrderItemWithProduct(
           tx,
@@ -182,11 +182,8 @@ export class OrdersService {
           period_id,
           user_id,
           this.stockService,
-          sharedCreatedProductId
+          createdProductsMap
         );
-        if (!sharedCreatedProductId && (item.product_id || item.productId)) {
-          sharedCreatedProductId = item.product_id || item.productId;
-        }
       }
 
       return tx.order.findUniqueOrThrow({
@@ -441,7 +438,7 @@ export class OrdersService {
         }
         await tx.order_item.deleteMany({ where: { order_id: id } });
 
-        let sharedUpdatedProductId: number | null = null;
+        const createdProductsMap = new Map<string, number>();
         for (const item of body.items) {
           await createOrderItemWithProduct(
             tx,
@@ -450,11 +447,8 @@ export class OrdersService {
             updateData.period_id || current.period_id,
             user_id,
             this.stockService,
-            sharedUpdatedProductId
+            createdProductsMap
           );
-          if (!sharedUpdatedProductId && (item.product_id || item.productId)) {
-            sharedUpdatedProductId = item.product_id || item.productId;
-          }
         }
 
         if (isCancelling) {

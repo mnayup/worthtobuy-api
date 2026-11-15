@@ -289,11 +289,18 @@ export class ShipmentsService {
       cleaned.status = 'DELIVERED';
     }
 
+    const effectiveCourier = cleaned.courier !== undefined ? cleaned.courier : current.courier || '';
+    const isShopee =
+      cleaned.shipping_method === 'SHOPEE' ||
+      (cleaned.shipping_method === undefined && current.shipping_method === 'SHOPEE') ||
+      effectiveCourier.toLowerCase().includes('shopee');
+
     const isPackingAttempt =
       (cleaned.status === 'PACKED' || targetStatus === 'PACKED' || targetStatus === 'READY') &&
       current.status === 'WAITING_PACKING';
     const isSetResiAttempt =
-      (cleaned.tracking_number !== undefined &&
+      (!isShopee &&
+        cleaned.tracking_number !== undefined &&
         String(cleaned.tracking_number).trim() !== '' &&
         cleaned.tracking_number !== current.tracking_number) ||
       (['IN_TRANSIT', 'HANDED_TO_COURIER'].includes(targetStatus) &&
@@ -328,13 +335,13 @@ export class ShipmentsService {
       cleaned.packed_at = new Date();
     }
 
-    const effectiveCourier = cleaned.courier !== undefined ? cleaned.courier : current.courier || '';
-    const isShopee =
-      cleaned.shipping_method === 'SHOPEE' ||
-      (cleaned.shipping_method === undefined && current.shipping_method === 'SHOPEE') ||
-      effectiveCourier.toLowerCase().includes('shopee');
-
     if (isShopee) {
+      if (cleaned.tracking_number !== undefined && cleaned.shopee_order_no === undefined) {
+        cleaned.shopee_order_no = cleaned.tracking_number;
+      }
+      if (cleaned.shopee_order_no && !cleaned.tracking_number && !current.tracking_number) {
+        cleaned.tracking_number = cleaned.shopee_order_no;
+      }
       if (cleaned.shopee_refund_amount !== undefined && cleaned.shopee_refund_amount !== null) {
         await this.refundService.ensureShopeeRefund(
           current.id,
@@ -353,6 +360,8 @@ export class ShipmentsService {
       // Switched away from Shopee: clear Shopee data and cancel any pending Shopee refund
       cleaned.shopee_refund_amount = null;
       cleaned.shopee_username = null;
+      cleaned.shopee_order_no = null;
+      cleaned.shopee_variant = null;
       cleaned.shipping_method = 'MANUAL';
       await this.refundService.ensureShopeeRefund(current.id, current.order_id, 0);
 

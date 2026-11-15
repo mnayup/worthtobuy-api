@@ -8,70 +8,139 @@ export async function createOrderItemWithProduct(
   fallbackPeriodId: number | null,
   userId: number | undefined,
   stockService: StockService,
-  sharedProductId?: number | null
+  createdProductsMap?: Map<string, number>
 ) {
-  let pId = item.product_id || item.productId || (sharedProductId ?? null);
+  const rawPid = item.product_id || item.productId;
+  let pId: number | null =
+    rawPid && rawPid !== '__NEW_PRODUCT__' ? Number(rawPid) : null;
   const newProd = item.new_product || item.newProduct;
   const manualName = item.manual_product_name || item.manualProductName || item.name;
 
   let createdProductRecord: any = null;
-  if ((!pId || pId === '__NEW_PRODUCT__') && (newProd || manualName)) {
+  if (!pId && (newProd || manualName)) {
     const pData = newProd || item;
-    const stockQty = Number(pData.stock_quantity ?? pData.stockQuantity ?? 0);
     const prodCategory = (pData.category ? String(pData.category).trim() : null) || null;
-    const prodBrand = (pData.brand_name || pData.brandName ? String(pData.brand_name || pData.brandName).trim() : null) || null;
-    const prodName = (pData.name || pData.product_name || pData.productName || manualName ? String(pData.name || pData.product_name || pData.productName || manualName).trim() : 'New Product');
+    const prodBrand =
+      (pData.brand_name || pData.brandName || item.brand_name || item.brandName
+        ? String(pData.brand_name || pData.brandName || item.brand_name || item.brandName).trim()
+        : null) || null;
+    const prodName =
+      pData.name || pData.product_name || pData.productName || manualName
+        ? String(pData.name || pData.product_name || pData.productName || manualName).trim()
+        : 'New Product';
 
-    const createdProduct = await tx.product.create({
-      data: {
-        sku: pData.sku || sequence('SKU'),
-        name: prodName,
-        category: prodCategory,
-        brand_name: prodBrand,
-        variant: pData.variant || pData.variation || item.variation || null,
-        size: pData.size || item.size || null,
-        store_location: pData.store_location || pData.storeLocation || null,
-        product_url: pData.product_url || pData.productUrl || null,
-        image_urls:
-          pData.image_urls ||
-          (pData.image_url || pData.imageUrl ? [pData.image_url || pData.imageUrl] : []),
-        default_currency: pData.default_currency || pData.defaultCurrency || 'IDR',
-        stock_mode: pData.stock_mode || pData.stockMode || 'EVENT',
-        stock_quantity: stockQty,
-        buy_price: Number(
-          pData.buy_price ?? pData.buyPrice ?? pData.newProductBuyPrice ?? 0
-        ),
-        selling_price: Number(
-          item.unit_price_foreign ??
-            item.unitPriceForeign ??
-            pData.selling_price ??
-            pData.sellingPrice ??
-            0
-        ),
-        period_id: pData.period_id || pData.periodId || fallbackPeriodId || null,
-        notes: pData.notes || null,
-      },
-    });
-    createdProductRecord = createdProduct;
-    item.product_id = createdProduct.id;
-    item.productId = createdProduct.id;
-    if (stockQty > 0) {
-      await tx.inventory_movement.create({
+    const newProdKey = String(
+      item.new_product_key ||
+        item.newProductKey ||
+        pData.key ||
+        `${prodName.toLowerCase()}__${(prodBrand || '').toLowerCase()}`
+    );
+
+    const existingCreatedId = createdProductsMap?.get(newProdKey);
+    if (existingCreatedId) {
+      pId = existingCreatedId;
+      item.product_id = existingCreatedId;
+      item.productId = existingCreatedId;
+
+      const existingProd = await tx.product.findUnique({ where: { id: existingCreatedId } });
+      if (existingProd) {
+        const currentVars = String(existingProd.variant || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const itemVar = String(item.variation || pData.variant || '').trim();
+        if (itemVar && !currentVars.some((v) => v.toLowerCase() === itemVar.toLowerCase())) {
+          currentVars.push(itemVar);
+        }
+
+        const currentSizes = String(existingProd.size || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const itemSize = String(item.size || pData.size || '').trim();
+        if (itemSize && !currentSizes.some((s) => s.toLowerCase() === itemSize.toLowerCase())) {
+          currentSizes.push(itemSize);
+        }
+
+        const nextVariantStr = currentVars.length > 0 ? currentVars.join(', ') : null;
+        const nextSizeStr = currentSizes.length > 0 ? currentSizes.join(', ') : null;
+        if (nextVariantStr !== existingProd.variant || nextSizeStr !== existingProd.size) {
+          createdProductRecord = await tx.product.update({
+            where: { id: existingCreatedId },
+            data: {
+              variant: nextVariantStr,
+              size: nextSizeStr,
+            },
+          });
+        } else {
+          createdProductRecord = existingProd;
+        }
+      }
+    } else {
+      const stockQty = Number(pData.stock_quantity ?? pData.stockQuantity ?? 0);
+      const sellingPriceVal = Number(
+        item.unit_price_foreign ??
+          item.unitPriceForeign ??
+          pData.selling_price ??
+          pData.sellingPrice ??
+          0
+      );
+      const buyPriceVal = Number(
+        pData.buy_price ?? pData.buyPrice ?? pData.newProductBuyPrice ?? sellingPriceVal ?? 0
+      );
+
+      const createdProduct = await tx.product.create({
         data: {
-          product_id: createdProduct.id,
-          movement_type: 'INITIAL',
-          quantity: stockQty,
-          balance_after: stockQty,
-          reference_type: 'PRODUCT',
-          reference_id: String(createdProduct.id),
-          notes: 'Stok awal produk dari pesanan baru.',
-          user_id: userId,
+          sku: pData.sku || sequence('SKU'),
+          name: prodName,
+          category: prodCategory,
+          brand_name: prodBrand,
+          variant: pData.variant || pData.variation || item.variation || null,
+          size: pData.size || item.size || null,
+          store_location: pData.store_location || pData.storeLocation || null,
+          product_url: pData.product_url || pData.productUrl || null,
+          image_url:
+            pData.image_url ||
+            pData.imageUrl ||
+            (Array.isArray(pData.image_urls) && pData.image_urls.length > 0
+              ? pData.image_urls[0]
+              : null),
+          image_urls:
+            pData.image_urls ||
+            (pData.image_url || pData.imageUrl ? [pData.image_url || pData.imageUrl] : []),
+          default_currency: pData.default_currency || pData.defaultCurrency || 'IDR',
+          stock_mode: pData.stock_mode || pData.stockMode || 'EVENT',
+          stock_quantity: stockQty,
+          buy_price: buyPriceVal,
+          selling_price: sellingPriceVal,
+          period_id: pData.period_id || pData.periodId || fallbackPeriodId || null,
+          notes: pData.notes || null,
         },
       });
+      createdProductRecord = createdProduct;
+      pId = createdProduct.id;
+      item.product_id = createdProduct.id;
+      item.productId = createdProduct.id;
+      createdProductsMap?.set(newProdKey, createdProduct.id);
+
+      if (stockQty > 0) {
+        await tx.inventory_movement.create({
+          data: {
+            product_id: createdProduct.id,
+            movement_type: 'INITIAL',
+            quantity: stockQty,
+            balance_after: stockQty,
+            reference_type: 'PRODUCT',
+            reference_id: String(createdProduct.id),
+            notes: 'Stok awal produk dari pesanan baru.',
+            user_id: userId,
+          },
+        });
+      }
     }
   }
 
-  const activeProductId = item.product_id || item.productId;
+  const activeProductId = pId || Number(item.product_id || item.productId) || null;
   let sourceType = item.source_type || item.sourceType || 'CATALOG';
   let resolvedProductSellingPrice = 0;
   let catalogProductName: string | null = createdProductRecord?.name || null;

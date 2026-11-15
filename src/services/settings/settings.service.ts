@@ -23,6 +23,13 @@ export const DEFAULT_INVOICE_CONFIG = {
   footer: 'Thank you for shopping with WORTHTOBUY. Your items are handled with utmost care.',
 };
 
+export const DEFAULT_SHIPMENT_CONFIG = {
+  shopeeStoreUrl: process.env.SHOPEE_STORE_URL || 'https://shopee.co.id',
+  shopeeStoreName: 'WORTHTOBUY Official Shopee',
+  shopeeCheckoutInstruction:
+    'Silakan klik link Toko Shopee di bawah ini untuk melakukan checkout agar mendapatkan promo Gratis Ongkir Shopee, kemudian masukkan Nomor Pesanan Shopee beserta Varian Etalase yang Anda pilih.',
+};
+
 export const DEFAULT_WHATSAPP_TEMPLATES: Record<string, string> = {
   BILLING:
     `📚🌱 *INVOICE WORTHTOBUY*\n\n` +
@@ -162,10 +169,16 @@ export class SettingsService {
       ...((map['whatsapp_templates'] as Record<string, string>) || {}),
     };
 
+    const shipmentData = {
+      ...DEFAULT_SHIPMENT_CONFIG,
+      ...((map['shipment'] as Record<string, any>) || {}),
+    };
+
     return {
       ...map,
       brand: brandData,
       invoice: invoiceData,
+      shipment: shipmentData,
       whatsapp_templates: whatsappTemplatesData,
     };
   }

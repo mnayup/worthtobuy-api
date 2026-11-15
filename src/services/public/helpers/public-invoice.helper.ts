@@ -1,6 +1,10 @@
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../config/prisma/prisma.service';
-import { insertPaymentRecord } from './public-payment-submission.helper';
+import {
+  insertPaymentRecord,
+  applyPublicShippingAndStoragePreferences,
+} from './public-payment-submission.helper';
+import { DEFAULT_SHIPMENT_CONFIG } from '../../settings/settings.service';
 
 export async function fetchPublicInvoiceData(
   prisma: PrismaService,
@@ -48,6 +52,18 @@ export async function fetchPublicInvoiceData(
                       image_url: true,
                     },
                   },
+                },
+              },
+              shipments: {
+                select: {
+                  id: true,
+                  courier: true,
+                  service_type: true,
+                  shipping_method: true,
+                  tracking_number: true,
+                  shopee_order_no: true,
+                  shopee_variant: true,
+                  status: true,
                 },
               },
             },
@@ -130,10 +146,15 @@ export async function fetchPublicInvoiceData(
     (invoice as any).outstanding_amount = calculatedOutstanding;
   }
 
-  const [rawSettings, brandRecord, invoiceRecord] = await Promise.all([
+  const [rawSettings, brandRecord, invoiceRecord, shippingCounters] = await Promise.all([
     prisma.setting.findMany(),
     prisma.brand_setting.findFirst({ orderBy: { id: 'desc' } }),
     prisma.invoice_setting.findFirst({ orderBy: { id: 'desc' } }),
+    prisma.shipping_counter.findMany({
+      where: { deleted_at: null, is_active: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, code: true },
+    }),
   ]);
   const settings: Record<string, any> = Object.fromEntries(
     rawSettings.map((x) => [x.key, x.value])
@@ -141,9 +162,15 @@ export async function fetchPublicInvoiceData(
 
   const invoiceSettings = settings['invoice'] || {};
   const brandSettings = settings['brand'] || {};
+  const shipmentSettings = {
+    ...DEFAULT_SHIPMENT_CONFIG,
+    ...(settings['shipment'] || {}),
+  };
 
   return {
     invoice,
+    shipmentSettings,
+    shippingCounters,
     bankSettings: {
       bankName:
         invoiceRecord?.bank_name ||
@@ -180,6 +207,9 @@ export async function fetchPublicInvoiceData(
         brandSettings.qrisImageUrl ||
         process.env.DEFAULT_QRIS_IMAGE_URL ||
         '',
+      shopeeStoreUrl: shipmentSettings.shopeeStoreUrl || '',
+      shopeeStoreName: shipmentSettings.shopeeStoreName || '',
+      shopeeCheckoutInstruction: shipmentSettings.shopeeCheckoutInstruction || '',
       feeRules: settings['feeRules'] || null,
       feeRulesReseller: settings['feeRulesReseller'] || null,
     },
@@ -221,38 +251,28 @@ export async function createPublicPaymentProof(
   }
 
   const method = String(body.method || 'Bank Transfer').trim();
-  const isQrisPayment = method.toUpperCase().includes('QRIS');
 
-  const pendingPayment = await prisma.payment.findFirst({
+  const pendingPayments = await prisma.payment.findMany({
     where: {
       deleted_at: null,
       invoice_id: invoice.id,
       status: 'PENDING',
     },
+    select: { amount: true },
   });
-  if (pendingPayment) {
-    const isPendingQris = (pendingPayment.method || '')
-      .toUpperCase()
-      .includes('QRIS');
-    if (!isQrisPayment && !isPendingQris) {
-      throw new BadRequestException(
-        'Bukti transfer sebelumnya sedang diverifikasi oleh admin. ' +
-        'Harap menunggu.'
-      );
-    }
-  }
-
-  const isPaidSome = Number(invoice.paid_amount) > 0;
-  if (isPaidSome) {
-    const isWaitingSettlement = (invoice.orders || []).some(
-      (link) => link.order?.status === 'WAITING_SETTLEMENT'
+  const pendingSum = pendingPayments.reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0
+  );
+  const remainingToUpload = Math.max(
+    0,
+    Number(invoice.outstanding_amount || 0) - pendingSum
+  );
+  if (remainingToUpload <= 0) {
+    throw new BadRequestException(
+      'Total bukti pembayaran yang diunggah sudah memenuhi total tagihan invoice. ' +
+      'Harap menunggu verifikasi tim admin.'
     );
-    if (!isWaitingSettlement) {
-      throw new BadRequestException(
-        'Pembayaran DP sudah diterima. Form pelunasan belum dibuka ' +
-        'hingga status pesanan berubah menjadi Menunggu Pelunasan.'
-      );
-    }
   }
 
   const amount = Number(body.amount);
@@ -338,64 +358,15 @@ export async function updatePublicShippingMethod(
     throw new NotFoundException(`Invoice "${cleanNumber}" tidak ditemukan.`);
   }
 
-  const rawMethod =
-    body.shipping_method !== undefined ? body.shipping_method : body.shippingMethod;
-  const rawShopeeUsername =
-    body.shopee_username !== undefined ? body.shopee_username : body.shopeeUsername;
-
-  const shipping_method =
-    String(rawMethod || '').toUpperCase() === 'SHOPEE' ? 'SHOPEE' : 'MANUAL';
-  const shopee_username = rawShopeeUsername ? String(rawShopeeUsername).trim() : null;
-
-  await prisma.invoice.update({
-    where: { id: invoice.id },
-    data: {
-      shipping_method,
-      shopee_username,
-    },
-  });
-
-  const orderIds = (invoice.orders || []).map((link: any) => link.order_id);
-  if (orderIds.length > 0) {
-    await prisma.order.updateMany({
-      where: { id: { in: orderIds } },
-      data: {
-        shipping_method,
-        shopee_username,
-      },
-    });
-
-    if (shipping_method === 'SHOPEE') {
-      await prisma.shipment.updateMany({
-        where: { order_id: { in: orderIds }, status: 'WAITING_PACKING' },
-        data: {
-          courier: 'Shopee',
-          service_type: 'Checkout Shopee',
-          shipping_method: 'SHOPEE',
-          shopee_username,
-        },
-      });
-    } else {
-      await prisma.shipment.updateMany({
-        where: {
-          order_id: { in: orderIds },
-          status: 'WAITING_PACKING',
-          courier: 'Shopee',
-        },
-        data: {
-          courier: 'JNE',
-          service_type: null,
-          shipping_method: 'MANUAL',
-          shopee_username: null,
-        },
-      });
-    }
-  }
+  const updatedPrefs = await applyPublicShippingAndStoragePreferences(
+    prisma,
+    invoice,
+    body
+  );
 
   return {
     success: true,
-    message: 'Metode pengiriman berhasil disimpan.',
-    shipping_method,
-    shopee_username,
+    message: 'Pengaturan pengiriman berhasil disimpan.',
+    ...updatedPrefs,
   };
 }

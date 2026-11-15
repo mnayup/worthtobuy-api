@@ -1,4 +1,5 @@
 export function buildInvoiceWhereClause(query: any): any {
+  const tab = query.tab ? String(query.tab).toUpperCase() : undefined;
   const status = query.status && query.status !== 'ALL' ? String(query.status) : undefined;
   const billingModel =
     query.billing_model || query.billingModel
@@ -10,8 +11,26 @@ export function buildInvoiceWhereClause(query: any): any {
   const customerId = query.customer_id ? Number(query.customer_id) : query.customerId ? Number(query.customerId) : undefined;
   const now = new Date();
 
+  // Tab filter conditions:
+  // DP / Pre-Order: partially paid invoices (status PARTIAL, or paid > 0 with remaining balance, or billing_model DP)
+  const tabFilter: any = {};
+  if (tab === 'DP' || tab === 'PARTIAL') {
+    tabFilter.OR = [
+      { status: 'PARTIAL' },
+      { AND: [{ paid_amount: { gt: 0 } }, { outstanding_amount: { gt: 0 } }] },
+      { billing_model: 'DP' },
+      { dp_amount: { gt: 0 } },
+    ];
+  } else if (tab === 'PAID') {
+    tabFilter.OR = [
+      { status: 'PAID' },
+      { AND: [{ outstanding_amount: { lte: 0 } }, { paid_amount: { gt: 0 } }] },
+    ];
+  }
+
   return {
     deleted_at: null,
+    ...tabFilter,
     ...(status ? { status } : {}),
     ...(customerId ? { customer_id: customerId } : {}),
     ...(billingModel && billingModel !== 'ALL' ? { billing_model: billingModel } : {}),

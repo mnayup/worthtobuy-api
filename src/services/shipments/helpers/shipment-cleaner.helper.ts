@@ -132,6 +132,14 @@ export function cleanShipmentData(body: any): any {
     const val = body.shopee_username !== undefined ? body.shopee_username : body.shopeeUsername;
     cleaned.shopee_username = val ? String(val).trim() : null;
   }
+  if (body.shopee_order_no !== undefined || body.shopeeOrderNo !== undefined) {
+    const val = body.shopee_order_no !== undefined ? body.shopee_order_no : body.shopeeOrderNo;
+    cleaned.shopee_order_no = val ? String(val).trim() : null;
+  }
+  if (body.shopee_variant !== undefined || body.shopeeVariant !== undefined) {
+    const val = body.shopee_variant !== undefined ? body.shopee_variant : body.shopeeVariant;
+    cleaned.shopee_variant = val ? String(val).trim() : null;
+  }
   if (
     body.shopee_refund_amount !== undefined ||
     body.shopeeRefundAmount !== undefined

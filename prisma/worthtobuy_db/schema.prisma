@@ -395,7 +395,11 @@ model order {
   customer_notes           String?
   internal_notes           String?
   shipping_method          String?         @default("MANUAL")
+  shipping_courier         String?
+  shipping_service         String?
   shopee_username          String?
+  shopee_order_no          String?
+  shopee_variant           String?
   due_date                 DateTime?
   items                    order_item[]
   payments                 payment[]
@@ -575,6 +579,8 @@ model shipment {
   shipping_cost_difference Decimal?       @db.Decimal(18, 2)
   shipping_method          String?        @default("MANUAL")
   shopee_username          String?
+  shopee_order_no          String?
+  shopee_variant           String?
   shopee_refund_amount     Decimal?       @db.Decimal(18, 2)
   shipped_at               DateTime?
   packed_at                DateTime?
@@ -684,7 +690,11 @@ model invoice {
   notes              String?
   billing_model      String?         @default("FLEXIBLE")
   shipping_method    String?         @default("MANUAL")
+  shipping_courier   String?
+  shipping_service   String?
   shopee_username    String?
+  shopee_order_no    String?
+  shopee_variant     String?
   dp_percent         Int?
   dp_amount          Decimal?        @db.Decimal(18, 2)
   dp_settlement_note String?
