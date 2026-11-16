@@ -371,7 +371,12 @@ export class InvoiceCalcService {
             if (orderOutstanding <= 0 && isInvoiceVerifiedFullPaid) {
               shouldEnsureShipment = true;
             }
-          } else if (orderPaid > 0 || pendingTotal > 0 || isPriorityCustomer) {
+          } else if (
+            orderPaid > 0 ||
+            pendingTotal > 0 ||
+            isPriorityCustomer ||
+            (isInvoiceVerifiedFullPaid && Number(link.order.total_bill || 0) <= 0)
+          ) {
             if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(link.order.status)) {
               nextStatus = 'WAITING_PURCHASE';
             }
@@ -419,7 +424,13 @@ export class InvoiceCalcService {
         await this.ensureShipmentForOrder(link.order_id);
       }
 
-      if ((orderPaid > 0 || pendingTotal > 0 || isPriorityCustomer) && !isReadyStockOrder) {
+      if (
+        (orderPaid > 0 ||
+          pendingTotal > 0 ||
+          isPriorityCustomer ||
+          (isInvoiceVerifiedFullPaid && Number(link.order.total_bill || 0) <= 0)) &&
+        !isReadyStockOrder
+      ) {
         await this.ensurePurchasesForOrder(link.order_id);
       }
     }
@@ -567,7 +578,12 @@ export class InvoiceCalcService {
           if (outstanding_amount <= 0) {
             shouldEnsureShipment = true;
           }
-        } else if (paid_amount > 0 || pendingTotal > 0 || isPriorityCustomer) {
+        } else if (
+          paid_amount > 0 ||
+          pendingTotal > 0 ||
+          isPriorityCustomer ||
+          (isOrderVerifiedFullPaid && Number(order.total_bill || 0) <= 0)
+        ) {
           if (['NEW', 'WAITING_DP', 'DP_RECEIVED'].includes(order.status)) {
             nextStatus = 'WAITING_PURCHASE';
           }
@@ -615,7 +631,13 @@ export class InvoiceCalcService {
       await this.ensureShipmentForOrder(order_id);
     }
 
-    if ((paid_amount > 0 || pendingTotal > 0 || isPriorityCustomer) && !isReadyStockOrder) {
+    if (
+      (paid_amount > 0 ||
+        pendingTotal > 0 ||
+        isPriorityCustomer ||
+        (isOrderVerifiedFullPaid && Number(order.total_bill || 0) <= 0)) &&
+      !isReadyStockOrder
+    ) {
       await this.ensurePurchasesForOrder(order_id);
     }
 
