@@ -217,11 +217,23 @@ export class PurchasesService {
 
       const parseTagList = (raw: any): string[] => {
         if (!raw) return [];
-        if (Array.isArray(raw)) return raw.map(String).map((s) => s.trim()).filter(Boolean);
-        return String(raw)
-          .split(/[,;\n]/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+        const list = Array.isArray(raw)
+          ? raw.map(String).map((s) => s.trim()).filter(Boolean)
+          : String(raw)
+              .split(/[,;\n]/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+
+        const seen = new Set<string>();
+        const deduped: string[] = [];
+        for (const item of list) {
+          const lower = item.toLowerCase();
+          if (!seen.has(lower)) {
+            seen.add(lower);
+            deduped.push(item);
+          }
+        }
+        return deduped;
       };
 
       const rawVariantItems = Array.isArray(body.variantItems) && body.variantItems.length > 0
@@ -395,20 +407,16 @@ export class PurchasesService {
 
       // If selecting an existing product, merge new variants, sizes, optional images, and grouped variantRules into that 1 product
       if (body.productId !== '__NEW_PRODUCT__') {
-        const mergedVariants = Array.from(
-          new Set([
-            ...parseTagList(product.variant),
-            ...parseTagList(body.newProductVariant),
-            ...normalizedItems.map((i) => i.variant).filter(Boolean),
-          ])
-        );
-        const mergedSizes = Array.from(
-          new Set([
-            ...parseTagList(product.size),
-            ...parseTagList(body.newProductSize),
-            ...normalizedItems.map((i) => i.size).filter(Boolean),
-          ])
-        );
+        const mergedVariants = parseTagList([
+          ...parseTagList(product.variant),
+          ...parseTagList(body.newProductVariant),
+          ...normalizedItems.map((i) => i.variant).filter(Boolean),
+        ]);
+        const mergedSizes = parseTagList([
+          ...parseTagList(product.size),
+          ...parseTagList(body.newProductSize),
+          ...normalizedItems.map((i) => i.size).filter(Boolean),
+        ]);
 
         const existingVp: any =
           product.variant_prices && typeof product.variant_prices === 'object'
@@ -456,7 +464,7 @@ export class PurchasesService {
         });
       }
 
-      const status = cleaned.status || 'PURCHASED';
+      const status = cleaned.status || 'WAITING_PURCHASE';
       const purchaseNumber = cleaned.purchase_number || sequence('PUR');
       const brandName =
         cleaned.brand_name && cleaned.brand_name !== '-'
@@ -464,7 +472,6 @@ export class PurchasesService {
           : product.brand_name || '-';
 
       const createdPurchases: any[] = [];
-      let totalPurchasedQty = 0;
 
       for (const row of normalizedItems) {
         const rowQty = Math.max(1, Number(row.quantity || 1));
@@ -497,18 +504,6 @@ export class PurchasesService {
           },
         });
         createdPurchases.push(createdRow);
-        totalPurchasedQty += rowQty;
-      }
-
-      if (status === 'PURCHASED' && totalPurchasedQty > 0) {
-        await this.stockService.addStockFromPurchase(
-          this.prisma,
-          product.id,
-          totalPurchasedQty,
-          userId,
-          String(createdPurchases[0].id),
-          `Stok masuk (${totalPurchasedQty} pcs) dari pembelian event (${period.name}).`
-        );
       }
 
       return createdPurchases[0];
@@ -655,22 +650,9 @@ export class PurchasesService {
       },
     });
 
-    // If manual event purchase (no order_item_id), sync stock quantity changes
-    if (!current.order_item_id && current.product_id) {
-      const oldEffectiveQty = current.status === 'PURCHASED' ? Number(current.quantity || 0) : 0;
-      const newEffectiveQty = targetStatus === 'PURCHASED' ? nextQty : 0;
-      const delta = newEffectiveQty - oldEffectiveQty;
-      if (delta !== 0) {
-        await this.stockService.addStockFromPurchase(
-          this.prisma,
-          current.product_id,
-          delta,
-          userId,
-          String(current.id),
-          'Penyesuaian stok dari pembaruan pembelian event.'
-        );
-      }
-    } else if (body.status && body.status !== current.status && current.order_item && current.order_item_id) {
+    // Do NOT sync product stock during intermediate status updates or sorting transitions.
+    // Stock synchronization happens strictly when the user verifies Bought/Reject and executes Save on the checklist.
+    if (body.status && body.status !== current.status && current.order_item && current.order_item_id) {
       const order = current.order_item.order;
       const order_item_id = current.order_item_id;
       const from_status = current.order_item.fulfillment_status;
@@ -693,15 +675,6 @@ export class PurchasesService {
           userId
         );
       }
-    }
-
-    if (current.purchase_number && Array.isArray(body.sortingLines)) {
-      await syncPurchaseSpareStockHelper(
-        this.prisma,
-        this.stockService,
-        current.purchase_number,
-        userId
-      );
     }
 
     if (current.purchase_number) {

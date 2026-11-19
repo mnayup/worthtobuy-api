@@ -140,6 +140,15 @@ export function formatConsolidatedPurchase(purchases: any[]): any {
       purchase_status: isManualPurchase
         ? p.status
         : item.purchase_status || 'PENDING',
+      purchase_notes: item.purchase_notes || null,
+      decision:
+        p.status === 'PURCHASED'
+          ? 'BOUGHT'
+          : p.status === 'UNAVAILABLE'
+            ? item.purchase_notes === 'CANCEL_TO_STOCK'
+              ? 'CANCELLED'
+              : 'REJECTED'
+            : 'IDLE',
       kept_until: item.kept_until || null,
     };
   });

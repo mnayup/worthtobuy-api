@@ -146,8 +146,10 @@ export async function updateConsolidatedPurchaseHelper(
   for (const row of rows) {
     const itInput = (row.order_item_id ? itemMap.get(row.order_item_id) : undefined) || itemMap.get(row.id);
     const explicitDecision = itInput?.decision ? String(itInput.decision).toUpperCase() : undefined;
+    const isCancelledToStock = explicitDecision === 'CANCELLED';
     const isRejected =
       explicitDecision === 'REJECTED' ||
+      isCancelledToStock ||
       (explicitDecision === undefined &&
         Boolean(itInput?.is_rejected || itInput?.status === 'UNAVAILABLE'));
     const isBought =
@@ -224,9 +226,21 @@ export async function updateConsolidatedPurchaseHelper(
       });
 
       if (stockService && row.product_id) {
-        const oldEffectiveQty = row.status === 'PURCHASED' ? Number(row.quantity || 0) : 0;
-        const newEffectiveQty = targetStatus === 'PURCHASED' ? (nextQty || Number(row.quantity || 0)) : 0;
-        const delta = newEffectiveQty - oldEffectiveQty;
+        const existingMovements = await prisma.inventory_movement.findMany({
+          where: {
+            product_id: row.product_id,
+            reference_type: 'PURCHASE',
+            reference_id: String(row.id),
+          },
+          select: { quantity: true },
+        });
+        const alreadyAddedQty = existingMovements.reduce(
+          (sum, m) => sum + Number(m.quantity || 0),
+          0
+        );
+        const newEffectiveQty =
+          targetStatus === 'PURCHASED' ? (nextQty || Number(row.quantity || 0)) : 0;
+        const delta = newEffectiveQty - alreadyAddedQty;
         if (delta !== 0) {
           await stockService.addStockFromPurchase(
             prisma,
@@ -234,7 +248,10 @@ export async function updateConsolidatedPurchaseHelper(
             delta,
             userId,
             String(row.id),
-            'Penyesuaian stok dari pembaruan pembelian event.'
+            newEffectiveQty > 0
+              ? `Stok masuk (${newEffectiveQty} pcs) setelah verifikasi Bought pada pembelian ${purchaseNumber}.`
+              : `Reversal stok karena item tidak jadi dibeli (Reject / Idle) pada pembelian ${purchaseNumber}.`,
+            'PURCHASE'
           );
         }
       }
@@ -244,28 +261,30 @@ export async function updateConsolidatedPurchaseHelper(
     const order = row.order_item.order;
     const fromStatus = row.order_item.fulfillment_status;
 
-    // Case 1: Completely Rejected
+    // Case 1: Completely Rejected or Cancelled to Stock
     if (isRejected || (isBought && allocatedQty <= 0)) {
+      const cancelledActual = isCancelledToStock ? unitPrice * row.quantity : 0;
+      const est = Number(row.estimated_price);
       await prisma.purchase.update({
         where: { id: row.id },
         data: {
           ...commonData,
           ...specUpdateData,
           status: 'UNAVAILABLE',
-          actual_price: 0,
-          price_difference: 0,
+          actual_price: cancelledActual,
+          price_difference: isCancelledToStock ? cancelledActual - est : 0,
         },
       });
 
-      if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
-        await prisma.order_item.update({
-          where: { id: row.order_item_id },
-          data: {
-            ...specUpdateData,
-            ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
-          },
-        });
-      }
+      const nextPurchaseNotes = isCancelledToStock ? 'CANCEL_TO_STOCK' : 'REJECTED_NOT_GOT';
+      await prisma.order_item.update({
+        where: { id: row.order_item_id },
+        data: {
+          ...specUpdateData,
+          purchase_notes: nextPurchaseNotes,
+          ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+        },
+      });
 
       await handleUnavailableTransitionHelper(
         prisma,
@@ -301,6 +320,7 @@ export async function updateConsolidatedPurchaseHelper(
         data: {
           ...specUpdateData,
           quantity: allocatedQty,
+          purchase_notes: null,
           ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
         },
       });
@@ -336,15 +356,14 @@ export async function updateConsolidatedPurchaseHelper(
     });
 
     if (rowStatus === 'PURCHASED') {
-      if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
-        await prisma.order_item.update({
-          where: { id: row.order_item_id },
-          data: {
-            ...specUpdateData,
-            ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
-          },
-        });
-      }
+      await prisma.order_item.update({
+        where: { id: row.order_item_id },
+        data: {
+          ...specUpdateData,
+          purchase_notes: null,
+          ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
+        },
+      });
 
       await handlePurchasedTransitionHelper(
         prisma,
@@ -353,11 +372,12 @@ export async function updateConsolidatedPurchaseHelper(
         fromStatus,
         userId
       );
-    } else if (keptUntilData !== undefined || Object.keys(specUpdateData).length > 0) {
+    } else {
       await prisma.order_item.update({
         where: { id: row.order_item_id },
         data: {
           ...specUpdateData,
+          purchase_notes: null,
           ...(keptUntilData !== undefined ? { kept_until: keptUntilData } : {}),
         },
       });
@@ -449,12 +469,12 @@ export async function syncPurchaseSpareStockHelper(
 
   if (sortingLines.length === 0) return;
 
-  // Map productId -> { sortingActualQty, manualRowQty, customerAllocatedQty, productName }
+  // Map productId -> { sortingActualQty, manualRowPlannedQty, customerAllocatedQty, productName }
   const productMap = new Map<
     number,
     {
       sortingActualQty: number;
-      manualRowQty: number;
+      manualRowPlannedQty: number;
       customerAllocatedQty: number;
       productName: string;
     }
@@ -473,18 +493,30 @@ export async function syncPurchaseSpareStockHelper(
       if (!productMap.has(pid)) {
         productMap.set(pid, {
           sortingActualQty: 0,
-          manualRowQty: 0,
+          manualRowPlannedQty: 0,
           customerAllocatedQty: 0,
           productName: pname || `Product #${pid}`,
         });
       }
       const entry = productMap.get(pid)!;
       if (!r.order_item_id) {
-        if (r.status === 'PURCHASED') {
-          entry.manualRowQty += Math.max(0, Number(r.quantity || 0));
+        // Count the manual stock purchase row quantity regardless of status so that unverified/rejected
+        // manual stock purchase rows are NOT accidentally added via PURCHASE_SPARE.
+        // Verified Bought manual stock rows are synced directly via reference_type = 'PURCHASE'.
+        entry.manualRowPlannedQty += Math.max(0, Number(r.quantity || 0));
+      } else {
+        const isCancelledToStock =
+          r.status === 'UNAVAILABLE' &&
+          r.order_item?.purchase_notes === 'CANCEL_TO_STOCK';
+        const isRejectedNotGot =
+          r.status === 'UNAVAILABLE' &&
+          r.order_item?.purchase_notes !== 'CANCEL_TO_STOCK';
+        // Both CANCELLED (customer cancelled after item bought) and REJECTED (allocated elsewhere / item not assigned)
+        // have 0 units assigned to this customer order, so remaining physical Real Got Qty (sortingActualQty) minus
+        // non-rejected/non-cancelled customer items goes to spare stock.
+        if (!isCancelledToStock && !isRejectedNotGot) {
+          entry.customerAllocatedQty += Math.max(0, Number(r.quantity || 0));
         }
-      } else if (r.status !== 'UNAVAILABLE') {
-        entry.customerAllocatedQty += Math.max(0, Number(r.quantity || 0));
       }
     }
   }
@@ -498,7 +530,7 @@ export async function syncPurchaseSpareStockHelper(
     if (!productMap.has(pid)) {
       productMap.set(pid, {
         sortingActualQty: 0,
-        manualRowQty: 0,
+        manualRowPlannedQty: 0,
         customerAllocatedQty: 0,
         productName: String(line.productName || `Product #${pid}`),
       });
@@ -510,7 +542,7 @@ export async function syncPurchaseSpareStockHelper(
   for (const [productId, stats] of productMap.entries()) {
     const desiredSpareStock = Math.max(
       0,
-      stats.sortingActualQty - stats.manualRowQty - stats.customerAllocatedQty
+      stats.sortingActualQty - stats.manualRowPlannedQty - stats.customerAllocatedQty
     );
     const refId = `${purchaseNumber}:${productId}`;
     const spareMovements = await prisma.inventory_movement.findMany({
