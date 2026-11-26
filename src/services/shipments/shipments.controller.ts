@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Patch, Body, Param, Query, UseGuards, Req } from "@nestjs/common";
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, UseGuards, Req } from "@nestjs/common";
 import { ShipmentsService } from "./shipments.service";
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -18,6 +18,24 @@ export class ShipmentsController {
   @Get('summary')
   async getSummary() {
     return this.shipmentsService.getSummary();
+  }
+
+  @Get('eligible-orders')
+  async findEligibleOrders(@Query('search') search?: string) {
+    return this.shipmentsService.findEligibleOrdersForShipment(search);
+  }
+
+  @Post('generate')
+  @Roles("OWNER", "ADMIN")
+  async generateFromOrders(@Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {
+    const orderIds = Array.isArray(body?.orderIds)
+      ? body.orderIds
+      : Array.isArray(body?.order_ids)
+        ? body.order_ids
+        : [];
+    const data = await this.shipmentsService.generateFromOrders(orderIds, userId);
+    await auditLog(this.prisma, userId, "GENERATE", "Shipment", String(orderIds.join(',')), body, req.ip);
+    return data;
   }
 
   @Get()
@@ -83,6 +101,14 @@ export class ShipmentsController {
   async patchStatus(@Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: number, @Req() req: any) {
     const data = await this.shipmentsService.update(Number(id), body, userId);
     await auditLog(this.prisma, userId, "UPDATE_STATUS", "Shipment", String(data.id), body, req.ip);
+    return data;
+  }
+
+  @Delete(":id")
+  @Roles("OWNER", "ADMIN")
+  async remove(@Param("id") id: string, @CurrentUser("id") userId: number, @Req() req: any) {
+    const data = await this.shipmentsService.remove(Number(id), userId);
+    await auditLog(this.prisma, userId, "DELETE", "Shipment", String(id), undefined, req.ip);
     return data;
   }
 }

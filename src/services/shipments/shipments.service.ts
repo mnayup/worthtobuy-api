@@ -3,6 +3,7 @@ import { PrismaService } from '../../config/prisma/prisma.service';
 import { StockService } from '../shared/stock.service';
 import { RefundService } from '../shared/refund.service';
 import { InvoiceCalcService } from '../shared/invoice-calc.service';
+import { UploadsService } from '../uploads/uploads.service';
 import { cleanShipmentData } from './helpers/shipment-cleaner.helper';
 import { processShippingCostVariance } from './helpers/shipment-variance.helper';
 import {
@@ -19,6 +20,7 @@ export class ShipmentsService {
     private stockService: StockService,
     private refundService: RefundService,
     private invoiceCalcService: InvoiceCalcService,
+    private uploadsService: UploadsService,
   ) { }
 
   private async syncItems(order_id: number, shipmentStatus: string, user_id?: number) {
@@ -1161,5 +1163,225 @@ export class ShipmentsService {
 
   async ensureShipmentForOrder(order_id: number) {
     return ensureShipmentForOrderHelper(this.prisma, order_id);
+  }
+
+  async findEligibleOrdersForShipment(search?: string) {
+    const q = String(search || '').trim();
+    const orders = await this.prisma.order.findMany({
+      where: {
+        deleted_at: null,
+        status: { notIn: ['CANCELLED', 'SHIPPED', 'COMPLETED', 'UNAVAILABLE', 'REFUND'] as any },
+        shipments: { none: {} },
+        shipment_orders: { none: {} },
+        ...(q
+          ? {
+              OR: [
+                { order_number: { contains: q, mode: 'insensitive' } },
+                { customer: { full_name: { contains: q, mode: 'insensitive' } } },
+                { period: { name: { contains: q, mode: 'insensitive' } } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ order_date: 'desc' }, { id: 'desc' }],
+      include: {
+        customer: { include: { whatsapp_group: true } },
+        period: true,
+        items: { include: { product: true } },
+        invoice_links: { include: { invoice: true } },
+      },
+      take: 200,
+    });
+
+    return orders
+      .filter((ord) => {
+        const items = ord.items || [];
+        if (items.length === 0) return false;
+        const activeItems = items.filter((it) => it.fulfillment_status !== 'UNAVAILABLE');
+        if (activeItems.length === 0) return false;
+        const isReadyStockOrder = ord.period?.code === 'READY-STOCK';
+        const hasPurchasedItem = activeItems.some(
+          (it) =>
+            it.purchase_status === 'PURCHASED' ||
+            ['AVAILABLE', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(
+              String(it.fulfillment_status || '')
+            ) ||
+            it.source_type === 'READY_STOCK' ||
+            isReadyStockOrder
+        );
+        return hasPurchasedItem;
+      })
+      .map((ord) => ({
+        ...ord,
+        is_fully_paid: isOrderFullyPaid(ord),
+      }));
+  }
+
+  async generateFromOrders(rawOrderIds: number[], user_id?: number) {
+    const orderIds = Array.from(
+      new Set((rawOrderIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))
+    );
+    if (orderIds.length === 0) {
+      throw new BadRequestException('Pilih minimal 1 order untuk membuat shipment.');
+    }
+
+    const orders = await this.prisma.order.findMany({
+      where: {
+        id: { in: orderIds },
+        deleted_at: null,
+        status: { notIn: ['CANCELLED'] as any },
+      },
+      include: {
+        customer: true,
+        items: true,
+        shipments: true,
+        shipment_orders: true,
+        invoice_links: { include: { invoice: true } },
+      },
+    });
+
+    if (orders.length === 0) {
+      throw new BadRequestException('Order yang dipilih tidak ditemukan.');
+    }
+
+    const alreadyLinked = orders.filter(
+      (o) => (o.shipments && o.shipments.length > 0) || (o.shipment_orders && o.shipment_orders.length > 0)
+    );
+    if (alreadyLinked.length > 0) {
+      throw new BadRequestException(
+        `Order ${alreadyLinked.map((o) => o.order_number).join(', ')} sudah memiliki shipment aktif.`
+      );
+    }
+
+    // Enforce all selected orders belong to the same customer and bundle into 1 shipment
+    const distinctCustomerIds = Array.from(new Set(orders.map((ord) => ord.customer_id)));
+    if (distinctCustomerIds.length > 1) {
+      throw new BadRequestException(
+        'Seluruh order yang dipilih harus berasal dari customer yang sama untuk digabung menjadi 1 shipment.'
+      );
+    }
+
+    const byCustomer = new Map<number, typeof orders>();
+    byCustomer.set(distinctCustomerIds[0], orders);
+
+    const createdShipments: any[] = [];
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const [customerId, groupOrders] of byCustomer.entries()) {
+        const primary = groupOrders[0];
+        const allPaid = groupOrders.every((ord) => isOrderFullyPaid(ord));
+        const initialStatus = allPaid ? 'WAITING_PACKING' : 'WAITING_VERIFICATION';
+        const totalShipping = groupOrders.reduce(
+          (sum, ord) => sum + Number(ord.customer_shipping || ord.local_shipping || 0),
+          0
+        );
+
+        const created = await tx.shipment.create({
+          data: {
+            order_id: primary.id,
+            customer_id: customerId,
+            address: primary.customer?.address || '-',
+            courier: primary.shipping_courier || 'JNE',
+            service_type: primary.shipping_service || null,
+            shipping_cost: totalShipping,
+            shipping_method: primary.shipping_method || 'MANUAL',
+            status: initialStatus as any,
+          },
+        });
+
+        for (const ord of groupOrders) {
+          await tx.shipment_order.upsert({
+            where: {
+              shipment_id_order_id: {
+                shipment_id: created.id,
+                order_id: ord.id,
+              },
+            },
+            create: {
+              shipment_id: created.id,
+              order_id: ord.id,
+            },
+            update: {},
+          });
+        }
+
+        createdShipments.push(created);
+      }
+    });
+
+    return {
+      count: createdShipments.length,
+      shipments: createdShipments,
+    };
+  }
+
+  async remove(id: number, user_id?: number) {
+    const current = await this.prisma.shipment.findUnique({
+      where: { id },
+      include: {
+        shipment_orders: true,
+      },
+    });
+    if (!current) {
+      throw new BadRequestException('Shipment tidak ditemukan.');
+    }
+
+    const deletableStatuses = ['WAITING_VERIFICATION', 'WAITING_PACKING', 'PACKED', 'READY'];
+    if (!deletableStatuses.includes(current.status)) {
+      throw new BadRequestException(
+        'Pengiriman tidak dapat dihapus karena sudah melewati tahap Packed (sedang dikirim atau sudah selesai).'
+      );
+    }
+
+    const orderIdsSet = new Set<number>();
+    if (current.order_id) orderIdsSet.add(current.order_id);
+    for (const so of current.shipment_orders || []) {
+      orderIdsSet.add(so.order_id);
+    }
+    const orderIds = Array.from(orderIdsSet);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.shipment_order.deleteMany({
+        where: { shipment_id: id },
+      });
+      await tx.shipment.delete({
+        where: { id },
+      });
+
+      if (orderIds.length > 0) {
+        await tx.order_item.updateMany({
+          where: {
+            order_id: { in: orderIds },
+            fulfillment_status: 'READY_TO_SHIP' as any,
+          },
+          data: {
+            fulfillment_status: 'AVAILABLE' as any,
+            status_updated_at: new Date(),
+          },
+        });
+        await tx.order.updateMany({
+          where: {
+            id: { in: orderIds },
+            status: 'READY_TO_SHIP' as any,
+          },
+          data: {
+            status: 'PURCHASED' as any,
+          },
+        });
+      }
+    });
+
+    // Permanently delete packing & proof images from S3/MinIO storage
+    await this.uploadsService.deleteFilesByUrl([
+      current.proof_before_url,
+      current.proof_url,
+    ]);
+
+    return {
+      deleted: true,
+      id,
+      revertedOrderIds: orderIds,
+      deletedBy: user_id || null,
+    };
   }
 }
